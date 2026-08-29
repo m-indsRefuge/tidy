@@ -1,24 +1,20 @@
 # TIDY-S1 — Intake & Evidence Design
 
-Status: Approved design, pending implementation plan
+Status: Approved design, pending user spec review
 Date: 2026-08-29
 Subsystem: TIDY-S1
 
 ## 1. Purpose
 
-TIDY-S1 is the read-only filesystem perception layer for Tidy.
+TIDY-S1 is Tidy's read-only filesystem perception layer. It discovers candidate files in configured inboxes, determines when they are stable enough to inspect safely, computes deterministic fingerprints, and emits a fact-only `FileEvidence` contract for downstream consumers.
 
-Its responsibility is to discover candidate files in configured inboxes, determine when those files are stable enough to inspect safely, compute deterministic fingerprints, and produce a fact-only `FileEvidence` contract for downstream consumers.
-
-The subsystem has one governing invariant:
+The governing invariant is:
 
 > TIDY-S1 may observe filesystem state. It possesses no filesystem mutation capability.
 
-TIDY-S1 must never classify files, infer destinations, learn user rules, create folders, rename files, move files, delete files, execute files, or extract document body content.
+S1 must never classify files, infer destinations, learn user rules, create folders, rename files, move files, delete files, execute files, or extract document body content.
 
 ## 2. Architectural Role
-
-The initial data flow is:
 
 ```text
 Configured Inbox
@@ -29,68 +25,63 @@ Configured Inbox
       ↓
 Fingerprint
       ↓
+Revalidation
+      ↓
 FileEvidence
 ```
 
-Downstream classification is explicitly outside this subsystem:
+Downstream interpretation is outside this subsystem:
 
 ```text
 TIDY-S1 FileEvidence → TIDY-S2 Classification
 ```
 
-`FileEvidence` contains observed facts only. Any interpretation of those facts belongs to later subsystems.
+`FileEvidence` contains observed facts only. Classification, confidence, destination, and user preference are downstream concerns.
 
 ## 3. Scope
 
 TIDY-S1 V1 includes:
 
 - one configured inbox: the user's Downloads directory
+- a generic inbox contract so more inboxes can be added later
 - non-recursive file discovery
-- rejection of unsafe indirections such as symlinks and Windows reparse-point traversal
+- rejection of symlinks and unsafe Windows reparse-point traversal
 - configurable ignored temporary-download suffixes
-- repeated-observation file stability tracking
-- deterministic SHA-256 fingerprinting of stable files
+- repeated-observation stability tracking
+- deterministic streamed SHA-256 fingerprinting
+- post-hash revalidation to detect changes during fingerprinting
 - filename and filesystem metadata capture
 - extension-derived MIME hints
-- explicit outcomes for files that cannot become evidence
-- isolated tests using temporary directories only
-
-The architecture must allow additional inboxes later without changing the `FileEvidence` contract.
+- explicit outcomes for files that cannot become trusted evidence
+- isolated automated tests using temporary directories only
 
 ## 4. Non-Goals
 
-TIDY-S1 V1 does not include:
+S1 V1 does not include:
 
 - `watchdog` or another filesystem-event dependency
 - recursive directory crawling
 - SQLite persistence
-- Ollama or any model provider
+- Ollama or any other model provider
 - classification or categorisation
-- destination selection
-- policy scoring
+- destination selection or policy scoring
 - file movement, renaming, deletion, or folder creation
 - PDF/text extraction
 - image understanding
 - archive inspection
-- file-type detection from magic bytes
+- magic-byte type detection
 - duplicate-file policy
 - long-term learning or user memory
-
-These are intentionally deferred to later bounded subsystems.
 
 ## 5. Observation Strategy
 
 ### 5.1 Authoritative scanner
 
-The deterministic scanner is the source of truth.
-
-A future filesystem watcher may be added as a wake-up mechanism that requests another scan, but filesystem events themselves must never become authoritative evidence.
-
-This protects Tidy from duplicate, reordered, coalesced, or platform-specific event behaviour.
+The deterministic scanner is the source of truth. A future filesystem watcher may wake the scanner when something changes, but an OS filesystem event must never itself become authoritative evidence.
 
 ### 5.2 V1 inbox
 
-The initial configuration exposes one logical inbox:
+The initial logical inbox is:
 
 ```text
 id: downloads
@@ -98,19 +89,17 @@ root: resolved user Downloads directory
 recursive: false
 ```
 
-The path is configuration data rather than a hard-coded dependency throughout the subsystem.
+The root is configuration, not a path hard-coded throughout the subsystem.
 
 ### 5.3 Non-recursive discovery
 
-Only direct child files of the configured inbox are candidates.
-
-Directories are not recursively traversed. This prevents an extracted project, archive directory, dependency tree, or other large folder from being interpreted as thousands of independent organisational items.
+Only direct-child files are candidates. Directories are not recursively traversed. An extracted project or dependency tree must therefore not become thousands of independent intake items.
 
 ## 6. Domain Contracts
 
 ### 6.1 `Inbox`
 
-Conceptual fields:
+Conceptual contract:
 
 ```python
 Inbox(
@@ -120,31 +109,28 @@ Inbox(
 )
 ```
 
-V1 requires `recursive=False`.
-
-The inbox root must be resolved and validated before discovery begins.
+V1 requires `recursive=False`. The root must be resolved and validated before discovery begins.
 
 ### 6.2 `FileSnapshot`
 
-A transient observation used by stability tracking.
-
-Conceptual fields:
+A transient point-in-time observation used for stability tracking:
 
 ```python
 FileSnapshot(
     relative_path: Path,
     size_bytes: int,
     modified_ns: int,
+    observed_at: datetime,
 )
 ```
 
-A snapshot is not durable evidence and does not imply that the file is stable.
+`observed_at` is used to enforce the settle interval. Snapshot equivalence for stability compares the file-state fields (`relative_path`, `size_bytes`, `modified_ns`), not the observation timestamp.
+
+A snapshot is not durable evidence and does not imply stability.
 
 ### 6.3 `FileEvidence`
 
-The canonical downstream fact contract.
-
-Conceptual fields:
+The canonical downstream fact contract:
 
 ```python
 FileEvidence(
@@ -162,11 +148,13 @@ FileEvidence(
 )
 ```
 
-`FileEvidence` contains no classification, destination, confidence score, model reasoning, document text, or user preference.
+`path` is the resolved absolute observed path proven to belong to the configured inbox. `relative_path` is its path relative to that inbox root.
+
+`FileEvidence` contains no classification, destination, confidence score, model reasoning, extracted document text, or user preference.
 
 ### 6.4 Fact vs inference boundary
 
-Examples of S1 facts:
+S1 facts include:
 
 ```text
 filename = "ACME_August_Invoice.pdf"
@@ -176,7 +164,7 @@ mime_hint = "application/pdf"
 sha256 = "..."
 ```
 
-Examples that are not S1 facts:
+These are not S1 facts:
 
 ```text
 document_type = "invoice"
@@ -185,19 +173,17 @@ destination = "Finance/Invoices"
 confidence = 0.94
 ```
 
-Those are interpretations and belong downstream.
-
 ## 7. Discovery Rules
 
 The scanner considers ordinary direct-child files only.
 
-It must ignore or reject:
+It ignores or rejects:
 
 - directories
 - symbolic links
-- entries that would require following Windows reparse-point traversal
-- files with configured temporary/incomplete-download suffixes
-- entries that disappear before they can be safely observed
+- entries requiring prohibited Windows reparse-point traversal
+- configured temporary/incomplete-download suffixes
+- entries that disappear before safe observation
 - paths that cannot be proven to remain inside the configured inbox root
 
 Initial ignored suffixes:
@@ -212,43 +198,31 @@ Initial ignored suffixes:
 
 Suffix matching is case-insensitive on Windows.
 
-An ignored suffix is not proof that every other file is complete. Stability remains an independent requirement.
+Not having an ignored suffix is not proof of completion; stability is an independent requirement.
 
 ## 8. Path Safety and Provenance
 
-Every candidate must retain path provenance:
+Every candidate retains:
 
 ```text
 configured inbox root
 +
 relative path beneath that root
 +
-resolved observed path
+resolved absolute observed path
 ```
 
-Before evidence is produced, TIDY-S1 must verify that the candidate belongs to the configured inbox and that discovery has not escaped through a symlink, junction, reparse point, or equivalent indirection.
+Before evidence is emitted, S1 must prove the candidate belongs to the configured inbox and has not escaped through a symlink, junction, reparse point, or equivalent indirection.
 
-Read-only code still requires a trust boundary because later subsystems will rely on the provenance established by S1.
-
-No downstream consumer should need to guess whether an arbitrary path came from an approved inbox.
+Read-only code still establishes a trust boundary because later subsystems will rely on S1's provenance.
 
 ## 9. Stability Model
 
-### 9.1 Stability is repeated observation
+### 9.1 Repeated observation
 
-File age alone is insufficient.
+File age alone is insufficient. A candidate becomes eligible for fingerprinting only after two equivalent file-state snapshots separated by at least the configured settle interval.
 
-A candidate becomes eligible for fingerprinting only after two equivalent snapshots separated by a configurable settle interval.
-
-The comparison tuple is:
-
-```text
-relative_path
-size_bytes
-modified_ns
-```
-
-For a single tracked path:
+For one tracked path:
 
 ```text
 DISCOVERED
@@ -256,65 +230,68 @@ DISCOVERED
 OBSERVING
     ↓
 snapshot changed ─────→ OBSERVING
-    ↓ unchanged across settle interval
-STABLE
+    ↓ unchanged after settle interval
+STABLE-CANDIDATE
 ```
 
-### 9.2 Default settle interval
+### 9.2 Default interval
 
-The V1 default settle interval is 2 seconds, but it is configuration rather than domain logic.
+The V1 default settle interval is 2 seconds and is configurable.
 
-The important rule is not "older than two seconds". The rule is "unchanged across two observations separated by the configured interval".
+The rule is not "older than two seconds." The rule is "unchanged across equivalent observations separated by at least two seconds by default."
 
-### 9.3 Tracker persistence
+### 9.3 Clock handling
 
-Stability state is in-memory only in V1.
+Time-dependent logic must accept an injected clock or explicit observation timestamps so automated tests never require real multi-second sleeps.
 
-A restart may require an already-complete file to be observed twice again. This is acceptable because S1's transient observation history is not durable user knowledge.
+### 9.4 Tracker persistence
 
-SQLite is therefore not introduced in S1.
+Stability state is in-memory only. After restart, an already-complete file may need two observations again. This is acceptable because transient observation history is not durable user knowledge.
 
-### 9.4 Changed or replaced files
+### 9.5 Changed, replaced, or disappeared files
 
-If size or modification time changes, the stability window restarts.
+A size or modification-time change restarts the stability window. A disappeared path invalidates its transient tracking state.
 
-If a path disappears, the tracker removes or invalidates its transient state.
+Filename alone never establishes content identity.
 
-If a path is replaced with different bytes while retaining the same name, later fingerprinting identifies the new content; no identity is inferred from filename alone.
+## 10. Fingerprinting and Post-Hash Revalidation
 
-## 10. Fingerprinting
+Fingerprinting begins only after the file reaches `STABLE-CANDIDATE`.
 
-Fingerprinting occurs only after stability has been established.
+V1 uses SHA-256 with:
 
-The V1 fingerprint algorithm is SHA-256.
-
-Properties required:
-
-- deterministic for identical bytes
-- streamed/chunked reading rather than loading entire files into memory
-- lower-case hexadecimal output
+- deterministic lower-case hexadecimal output
+- streamed/chunked reading rather than whole-file loading
 - read-only file access
-- explicit failure outcome when the file cannot be read
+- explicit failure outcomes
+
+### 10.1 TOCTOU protection
+
+A stability decision is not permanent. A file may change after the second snapshot or while hashing is in progress.
+
+Therefore the service must:
+
+1. retain the stable candidate snapshot
+2. compute SHA-256
+3. take a fresh post-hash snapshot
+4. compare the post-hash file-state fields to the stable candidate snapshot
+5. emit `READY` evidence only if they are still equivalent
+
+If the file changes during hashing, the computed fingerprint is discarded for evidence purposes, the path returns to the unstable observation flow, and no `FileEvidence` is emitted from that attempt.
+
+If the file disappears during hashing or post-hash revalidation, the result is `DISAPPEARED`.
 
 A fingerprint is a content identity signal, not a duplicate-handling decision.
 
-For example, several differently named files may have the same SHA-256. S1 records that fact; later subsystems decide whether it matters.
-
 ## 11. MIME Hint
 
-V1 may derive a MIME value from the filename/extension using the standard-library MIME mapping.
+V1 may derive MIME information from filename/extension using the standard library. The field is explicitly named `mime_hint` because extension-based type information is not authoritative content inspection.
 
-The field is named `mime_hint`, not `mime_type`, because extension-derived MIME information is not authoritative content inspection.
-
-Unknown mappings result in `None` rather than guessed values.
-
-Magic-byte or content-based type detection is deferred.
+Unknown mappings produce `None`. Magic-byte/content-based detection is deferred.
 
 ## 12. Observation Outcomes
 
-S1 must represent uncertainty and dynamic filesystem conditions explicitly rather than silently swallowing them.
-
-The implementation must support semantically equivalent outcomes for:
+S1 represents dynamic filesystem states explicitly. The implementation must support semantically equivalent outcomes for:
 
 ```text
 READY
@@ -326,45 +303,22 @@ UNSAFE_PATH
 FINGERPRINT_FAILED
 ```
 
-Exact Python type names may be refined during the implementation plan, but the semantic distinctions are locked by this design.
+Exact Python type names may be refined in the implementation plan, but the distinctions are locked.
 
-### `READY`
-
-A stable candidate successfully produced `FileEvidence`.
-
-### `UNSTABLE`
-
-The file exists but has not yet satisfied repeated-observation stability.
-
-### `IGNORED`
-
-The entry is intentionally outside V1 intake policy, such as a temporary suffix or directory.
-
-### `INACCESSIBLE`
-
-Required metadata cannot be read because of permissions or another access failure.
-
-### `DISAPPEARED`
-
-The entry existed during discovery but vanished during later observation/fingerprinting.
-
-### `UNSAFE_PATH`
-
-The candidate cannot be proven to remain safely within the configured inbox or relies on prohibited indirection.
-
-### `FINGERPRINT_FAILED`
-
-The file was stable enough to attempt hashing but hashing failed for a reason other than the file simply disappearing.
+- `READY`: stable, fingerprinted, revalidated, and `FileEvidence` emitted.
+- `UNSTABLE`: present but not yet stable, or changed during/post hashing and returned to observation.
+- `IGNORED`: intentionally outside V1 intake policy, such as a directory or temporary suffix.
+- `INACCESSIBLE`: required metadata cannot be read because of permissions or another access failure.
+- `DISAPPEARED`: existed during discovery/observation but vanished before evidence completion.
+- `UNSAFE_PATH`: cannot be proven to remain safely inside the inbox or relies on prohibited indirection.
+- `FINGERPRINT_FAILED`: stable enough to hash, but hashing failed for a reason other than disappearance.
 
 No broad `except Exception: continue` behaviour is permitted at subsystem boundaries.
 
 ## 13. Internal Components
 
-Proposed package structure:
-
 ```text
 src/tidy/
-
   domain/
     inbox.py
     evidence.py
@@ -379,39 +333,17 @@ src/tidy/
 
 Responsibilities:
 
-### `domain/inbox.py`
+- `domain/inbox.py`: inbox identity/root contract.
+- `domain/evidence.py`: immutable `FileEvidence`.
+- `domain/observation.py`: transient snapshots and observation/outcome types.
+- `intake/scanner.py`: direct-child enumeration and safe path provenance.
+- `intake/stability.py`: repeated-observation tracking and settle decisions.
+- `intake/fingerprint.py`: streamed read-only SHA-256.
+- `intake/service.py`: discovery → snapshot → stability → fingerprint → revalidation → evidence.
 
-Defines configured inbox identity and root contract.
-
-### `domain/evidence.py`
-
-Defines immutable `FileEvidence`.
-
-### `domain/observation.py`
-
-Defines transient file snapshots and observation/outcome types shared across intake.
-
-### `intake/scanner.py`
-
-Enumerates direct-child candidates and establishes safe path provenance.
-
-### `intake/stability.py`
-
-Tracks repeated snapshots and determines whether a file has met the settle rule.
-
-### `intake/fingerprint.py`
-
-Computes SHA-256 for stable candidates using streamed read-only access.
-
-### `intake/service.py`
-
-Coordinates discovery → snapshot → stability → fingerprint → evidence construction.
-
-It does not own policy beyond the S1 rules defined here.
+The service owns no policy beyond the S1 perception rules defined here.
 
 ## 14. Dependency Direction
-
-The intended dependency direction is:
 
 ```text
      domain
@@ -427,25 +359,19 @@ Later:
 TIDY-S1 → FileEvidence → TIDY-S2
 ```
 
-`domain` must not depend on `intake`.
-
-Neither `domain` nor `intake` may depend on model-provider code, memory/storage implementations, policy/execution modules, or UI code.
+`domain` must not depend on `intake`. Neither package may depend on model providers, persistent memory/storage, policy/execution modules, or UI code.
 
 ## 15. Error Handling
 
-The Downloads directory is inherently dynamic. Files may disappear, change, become locked, or be replaced between system calls.
+Downloads is dynamic. Files may disappear, change, become locked, or be replaced between system calls.
 
-Therefore normal race conditions are represented as outcomes rather than treated as process crashes where possible.
+Expected filesystem races become explicit outcomes where possible rather than process crashes. Unexpected programming errors remain visible and must not be converted into misleading ignored/success states.
 
-Unexpected programming errors must remain visible and must not be converted into misleading success or ignored states.
-
-The subsystem must not retry indefinitely.
-
-V1 does not need sophisticated backoff. A future scan naturally provides another opportunity to observe a transiently unavailable file.
+S1 does not retry indefinitely. A future scan naturally provides another attempt for transiently unavailable files.
 
 ## 16. Configuration
 
-S1 configuration requires only values needed for perception:
+S1 configuration contains perception settings only:
 
 ```text
 inbox root
@@ -455,63 +381,63 @@ ignored suffixes
 hash chunk size (implementation-level default)
 ```
 
-Configuration does not contain classification categories or destination policy.
+It contains no categories or destination policy.
 
-The default Downloads root may be derived by application/bootstrap code, but the core intake components receive an explicit `Inbox` object and therefore remain testable without the user's real filesystem.
+Application/bootstrap code may derive the default Downloads location, but core S1 components receive an explicit `Inbox`, keeping tests independent of the user's real filesystem.
 
 ## 17. Testing Strategy
 
-All automated filesystem tests use isolated temporary directories.
+All filesystem tests use isolated temporary directories. Automated tests must never scan or mutate the user's real Downloads directory.
 
-Tests must never scan or modify the user's real Downloads directory.
-
-The subsystem is implemented through TDD with tests covering at least:
+Implementation uses TDD and covers at least:
 
 ### Discovery
 
 - ordinary direct-child files are discovered
-- directories are not treated as files
+- directories are not treated as candidate files
 - nested files are not recursively discovered
 - configured temporary suffixes are ignored
-- suffix matching behaves correctly on Windows
-- unsafe indirection is rejected
+- suffix matching has the intended Windows behaviour
+- symlink/reparse escape is rejected
 
 ### Stability
 
 - first observation is unstable
-- an equivalent observation before/after the required interval follows the defined settle rule
-- changed size resets stability
-- changed modification time resets stability
-- disappeared files clear/invalidate tracking state
-- independent paths maintain independent stability histories
+- equivalent state before the minimum interval remains unstable
+- equivalent state at/after the minimum interval becomes a stable candidate
+- changed size restarts stability
+- changed modification time restarts stability
+- disappeared paths invalidate tracking state
+- independent paths maintain independent histories
+- tests use controlled time rather than sleeping
 
-Time-dependent tests should use an injected clock or explicit observation timestamps rather than real multi-second sleeps.
-
-### Fingerprinting
+### Fingerprinting and revalidation
 
 - known bytes produce the expected SHA-256
 - identical bytes produce identical hashes
 - different bytes produce different hashes
-- hashing is performed using bounded chunks
-- read failures are surfaced explicitly
-- disappearance during hashing is handled explicitly
+- reads are chunked
+- read failures surface explicitly
+- disappearance during hashing becomes `DISAPPEARED`
+- mutation during hashing prevents `READY` evidence
+- post-hash state equal to the stable snapshot permits evidence
 
 ### Evidence
 
-- only stable files produce `FileEvidence`
-- filename, stem, extension, size, timestamps, relative path, and inbox provenance are preserved
-- MIME mapping is treated as a hint
-- unknown MIME mapping remains `None`
-- no classification/destination fields exist in the contract
+- only revalidated stable files produce `FileEvidence`
+- absolute path, relative path, filename, stem, extension, size, modification time, inbox provenance, MIME hint, hash, and observation time are preserved correctly
+- MIME is explicitly a hint
+- unknown MIME remains `None`
+- no classification/destination fields exist
 
 ### Safety
 
 - no S1 module exposes move/delete/rename execution behaviour
-- path escape or prohibited indirection cannot produce READY evidence
+- path escape or prohibited indirection cannot produce `READY`
 
 ## 18. Verification Gate
 
-TIDY-S1 is not complete until all of the following succeed against the full repository:
+S1 is not complete until all of these succeed against the full repository:
 
 ```text
 uv run pytest
@@ -520,33 +446,31 @@ uv build
 uv sync
 ```
 
-The implementation gate also requires focused subsystem tests to pass independently.
-
-No completion claim may rely only on unit tests if package build or linting is failing.
+Focused S1 tests must also pass independently. No completion claim may rely only on unit tests while lint, package build, or sync is failing.
 
 ## 19. Acceptance Criteria
 
-TIDY-S1 is accepted when repository evidence demonstrates all of the following:
+TIDY-S1 is accepted when repository evidence demonstrates:
 
-1. Ordinary files in a configured inbox can be discovered deterministically.
-2. Discovery is non-recursive in V1.
+1. Ordinary files in a configured inbox are discovered deterministically.
+2. Discovery is non-recursive.
 3. Known temporary-download suffixes are ignored.
-4. Symlink/reparse-point escape paths cannot become trusted evidence.
+4. Symlink/reparse-point escape cannot produce trusted evidence.
 5. A changing file remains unstable.
-6. A file unchanged across the configured settle boundary becomes eligible for evidence generation.
-7. Only stable files are fingerprinted for final evidence.
-8. Stable content receives deterministic SHA-256.
-9. `FileEvidence` contains observed facts only.
-10. Extension-derived MIME information is explicitly represented as a hint.
-11. Dynamic disappearance is represented explicitly.
-12. Access and fingerprint failures are represented explicitly.
+6. Equivalent observations must span the configured settle interval before becoming stable candidates.
+7. Only stable candidates are fingerprinted.
+8. Files are revalidated after hashing; a change during hashing cannot produce `READY`.
+9. Stable content receives deterministic streamed SHA-256.
+10. `FileEvidence` contains observed facts only.
+11. Extension-derived MIME information is explicitly a hint.
+12. Disappearance, access failure, unsafe paths, and fingerprint failure are explicit outcomes.
 13. S1 has no classification, learning, destination-planning, or filesystem-mutation capability.
-14. Tests use isolated temporary directories and never the user's live Downloads directory.
+14. Tests use isolated temporary directories and controlled time.
 15. Full pytest, Ruff, build, and sync gates pass.
 
 ## 20. Future-Compatible Extension Points
 
-The design intentionally leaves room for later additions without placing them in V1:
+Potential later additions, explicitly outside V1:
 
 - filesystem-event wake-up adapters
 - multiple configured inboxes
@@ -556,23 +480,26 @@ The design intentionally leaves room for later additions without placing them in
 - image metadata evidence
 - persisted observation telemetry if later justified
 
-These extensions must preserve the central rule that S1 produces evidence, not decisions.
+Every extension must preserve the rule that S1 produces evidence, not decisions.
 
 ## 21. Locked Design Decisions
 
-The following decisions are considered approved for TIDY-S1 and should not be changed during implementation without explicit architectural review:
+Implementation must not change these without explicit architectural review:
 
 - S1 is read-only.
-- The scanner is authoritative.
+- The deterministic scanner is authoritative.
 - V1 starts with Downloads but uses a generic inbox contract.
 - Discovery is non-recursive.
-- Stability requires repeated equivalent observations; file age alone is insufficient.
-- The default settle interval is 2 seconds and is configurable.
+- Stability requires repeated equivalent observations; age alone is insufficient.
+- The default settle interval is 2 seconds and configurable.
+- Observation time is explicit and testable without real sleeps.
 - Stability tracking is transient/in-memory.
 - SHA-256 is the V1 content fingerprint.
 - Fingerprinting is streamed and occurs only after stability.
+- The file is revalidated after hashing before evidence can become `READY`.
 - MIME is an extension-derived hint only.
 - `FileEvidence` contains facts, never classification.
+- `path` is a resolved absolute path proven to remain within the inbox; `relative_path` preserves inbox-relative provenance.
 - Unsafe path indirection cannot produce trusted evidence.
 - Dynamic filesystem races are explicit outcomes.
 - SQLite, model providers, watchers, content extraction, policy, learning, and mutations remain outside S1.
