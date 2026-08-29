@@ -1,0 +1,1 @@
+"""intake subsystem for Tidy."""

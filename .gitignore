@@ -1,0 +1,44 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+
+# Build
+build/
+dist/
+*.egg-info/
+
+# Tidy runtime state
+.tidy/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+tidy.local.toml
+tidy.local.json
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+~$*
