@@ -79,7 +79,7 @@ class InboxScanner:
                 ObservationResult(
                     ObservationStatus.INACCESSIBLE,
                     Path("."),
-                    detail=str(exc),
+                    detail=type(exc).__name__,
                 ),
             )
         except OSError as exc:
@@ -87,7 +87,7 @@ class InboxScanner:
                 ObservationResult(
                     ObservationStatus.INACCESSIBLE,
                     Path("."),
-                    detail=str(exc),
+                    detail=type(exc).__name__,
                 ),
             )
 
@@ -109,7 +109,7 @@ class InboxScanner:
                     ObservationResult(
                         ObservationStatus.INACCESSIBLE,
                         relative,
-                        detail=str(exc),
+                        detail=type(exc).__name__,
                     )
                 )
                 continue
@@ -118,7 +118,7 @@ class InboxScanner:
                     ObservationResult(
                         ObservationStatus.INACCESSIBLE,
                         relative,
-                        detail=str(exc),
+                        detail=type(exc).__name__,
                     )
                 )
                 continue
@@ -175,7 +175,7 @@ class InboxScanner:
                     ObservationResult(
                         ObservationStatus.UNSAFE_PATH,
                         relative,
-                        detail=str(exc),
+                        detail=type(exc).__name__,
                     )
                 )
                 continue
@@ -184,7 +184,7 @@ class InboxScanner:
                     ObservationResult(
                         ObservationStatus.INACCESSIBLE,
                         relative,
-                        detail=str(exc),
+                        detail=type(exc).__name__,
                     )
                 )
                 continue
@@ -193,7 +193,7 @@ class InboxScanner:
                     ObservationResult(
                         ObservationStatus.INACCESSIBLE,
                         relative,
-                        detail=str(exc),
+                        detail=type(exc).__name__,
                     )
                 )
                 continue

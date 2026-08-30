@@ -89,16 +89,48 @@ class IntakeService:
                 candidate.relative_path,
             )
 
-        digest = self._fingerprinter(
-            candidate.path,
-            self._hash_chunk_size,
-        )
+        try:
+            digest = self._fingerprinter(
+                candidate.path,
+                self._hash_chunk_size,
+            )
+        except FileNotFoundError:
+            self._tracker.invalidate(candidate.relative_path)
+            return ObservationResult(
+                ObservationStatus.DISAPPEARED,
+                candidate.relative_path,
+            )
+        except OSError as exc:
+            return ObservationResult(
+                ObservationStatus.FINGERPRINT_FAILED,
+                candidate.relative_path,
+                detail=type(exc).__name__,
+            )
 
-        post_hash = self._scanner.snapshot(
-            inbox,
-            candidate,
-            self._clock(),
-        )
+        try:
+            post_hash = self._scanner.snapshot(
+                inbox,
+                candidate,
+                self._clock(),
+            )
+        except FileNotFoundError:
+            self._tracker.invalidate(candidate.relative_path)
+            return ObservationResult(
+                ObservationStatus.DISAPPEARED,
+                candidate.relative_path,
+            )
+        except UnsafePathError:
+            self._tracker.invalidate(candidate.relative_path)
+            return ObservationResult(
+                ObservationStatus.UNSAFE_PATH,
+                candidate.relative_path,
+            )
+        except OSError as exc:
+            return ObservationResult(
+                ObservationStatus.INACCESSIBLE,
+                candidate.relative_path,
+                detail=type(exc).__name__,
+            )
 
         if not stable_snapshot.same_file_state_as(post_hash):
             self._tracker.restart(post_hash)

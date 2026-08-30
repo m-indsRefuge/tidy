@@ -143,3 +143,88 @@ def test_snapshot_rejects_candidate_outside_inbox(
             candidate,
             datetime(2026, 8, 29, tzinfo=UTC),
         )
+
+def test_lstat_disappearance_is_explicit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "vanishing.pdf"
+    path.write_bytes(b"content")
+
+    inbox = Inbox("downloads", tmp_path)
+    original_lstat = Path.lstat
+
+    def disappearing_lstat(self: Path):
+        if self.name == "vanishing.pdf":
+            raise FileNotFoundError(self)
+        return original_lstat(self)
+
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        disappearing_lstat,
+    )
+
+    result = InboxScanner().scan(inbox)
+
+    assert len(result) == 1
+    assert isinstance(result[0], ObservationResult)
+    assert result[0].status is ObservationStatus.DISAPPEARED
+
+
+def test_lstat_permission_failure_is_inaccessible(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "locked.pdf"
+    path.write_bytes(b"content")
+
+    inbox = Inbox("downloads", tmp_path)
+    original_lstat = Path.lstat
+
+    def denied_lstat(self: Path):
+        if self.name == "locked.pdf":
+            raise PermissionError("denied")
+        return original_lstat(self)
+
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        denied_lstat,
+    )
+
+    result = InboxScanner().scan(inbox)
+
+    assert len(result) == 1
+    assert isinstance(result[0], ObservationResult)
+    assert result[0].status is ObservationStatus.INACCESSIBLE
+    assert result[0].detail == "PermissionError"
+
+
+def test_lstat_oserror_is_inaccessible(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "device.pdf"
+    path.write_bytes(b"content")
+
+    inbox = Inbox("downloads", tmp_path)
+    original_lstat = Path.lstat
+
+    def failing_lstat(self: Path):
+        if self.name == "device.pdf":
+            raise OSError("device error")
+        return original_lstat(self)
+
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        failing_lstat,
+    )
+
+    result = InboxScanner().scan(inbox)
+
+    assert len(result) == 1
+    assert isinstance(result[0], ObservationResult)
+    assert result[0].status is ObservationStatus.INACCESSIBLE
+    assert result[0].detail == "OSError"
