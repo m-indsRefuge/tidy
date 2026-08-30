@@ -42,7 +42,11 @@ rule promotion, and provide review and history interfaces.
 
 ## Status
 
-Architecture bootstrap.
+TIDY-S1 — Intake & Evidence is implemented and locally verified.
 
-Production behaviour will be added subsystem by subsystem after its
-contracts and acceptance criteria are defined.
+S1 provides read-only, non-recursive inbox discovery, repeated-observation
+stability tracking, streamed SHA-256 fingerprinting, post-hash revalidation,
+and fact-only `FileEvidence` output. Classification, learning, policy, and
+filesystem mutation remain outside the subsystem boundary.
+
+Next architectural subsystem: TIDY-S2 — Classification.
