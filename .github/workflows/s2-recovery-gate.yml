@@ -1,0 +1,51 @@
+name: S2 Recovery Gate
+
+on:
+  push:
+    branches:
+      - build/tidy-s2-classification-byte
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Full pytest
+        run: uv run pytest
+      - name: Ruff
+        run: uv run ruff check .
+      - name: Build
+        run: uv build
+      - name: Sync
+        run: uv sync
+      - name: Acceptance owner check
+        run: |
+          python - <<'PY'
+          import ast
+          import re
+          from pathlib import Path
+
+          files = [
+              Path("tests/unit/classification/test_rules.py"),
+              Path("tests/unit/classification/test_provider.py"),
+              Path("tests/unit/classification/test_service.py"),
+              Path("tests/architecture/test_s2_boundaries.py"),
+          ]
+          owners = []
+          for path in files:
+              tree = ast.parse(path.read_text(encoding="utf-8"))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.FunctionDef):
+                      match = re.match(r"test_s2_a(\d{2})_", node.name)
+                      if match:
+                          owners.append(int(match.group(1)))
+          expected = list(range(1, 54))
+          assert sorted(owners) == expected, (owners, expected)
+          assert len(set(owners)) == 53
+          print("A01-A53: exactly one owner each")
+          PY
