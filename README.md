@@ -44,9 +44,11 @@ rule promotion, and provide review and history interfaces.
 
 TIDY-S1 — Intake & Evidence is implemented and locally verified.
 
-S1 provides read-only, non-recursive inbox discovery, repeated-observation
-stability tracking, streamed SHA-256 fingerprinting, post-hash revalidation,
-and fact-only `FileEvidence` output. Classification, learning, policy, and
-filesystem mutation remain outside the subsystem boundary.
+TIDY-S2 — Classification is implemented and locally verified.
 
-Next architectural subsystem: TIDY-S2 — Classification.
+S2 consumes fact-only `FileEvidence`, resolves confirmed-user and known-system
+rules deterministically, and uses a bounded model-independent classifier
+provider only when deterministic knowledge cannot decide. Classification has
+no filesystem mutation authority; unresolved evidence remains explicit.
+
+Next architectural subsystem: TIDY-S3 — Policy & Planning.

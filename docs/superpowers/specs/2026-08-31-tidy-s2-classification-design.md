@@ -1,6 +1,6 @@
 # TIDY-S2 — Classification Design
 
-Status: Approved design, pending user spec review
+Status: Approved design
 Date: 2026-08-31
 Subsystem: TIDY-S2
 
