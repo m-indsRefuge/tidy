@@ -35,28 +35,32 @@ jobs:
 
           readme_path = Path("README.md")
           readme = readme_path.read_text(encoding="utf-8-sig")
-          old_block = """## Status
-
-TIDY-S1 — Intake & Evidence is implemented and locally verified.
-
-S1 provides read-only, non-recursive inbox discovery, repeated-observation
-stability tracking, streamed SHA-256 fingerprinting, post-hash revalidation,
-and fact-only `FileEvidence` output. Classification, learning, policy, and
-filesystem mutation remain outside the subsystem boundary.
-
-Next architectural subsystem: TIDY-S2 — Classification."""
-          new_block = """## Status
-
-TIDY-S1 — Intake & Evidence is implemented and locally verified.
-
-TIDY-S2 — Classification is implemented and locally verified.
-
-S2 consumes fact-only `FileEvidence`, resolves confirmed-user and known-system
-rules deterministically, and uses a bounded model-independent classifier
-provider only when deterministic knowledge cannot decide. Classification has
-no filesystem mutation authority; unresolved evidence remains explicit.
-
-Next architectural subsystem: TIDY-S3 — Policy & Planning."""
+          old_block = "\n".join([
+              "## Status",
+              "",
+              "TIDY-S1 — Intake & Evidence is implemented and locally verified.",
+              "",
+              "S1 provides read-only, non-recursive inbox discovery, repeated-observation",
+              "stability tracking, streamed SHA-256 fingerprinting, post-hash revalidation,",
+              "and fact-only `FileEvidence` output. Classification, learning, policy, and",
+              "filesystem mutation remain outside the subsystem boundary.",
+              "",
+              "Next architectural subsystem: TIDY-S2 — Classification.",
+          ])
+          new_block = "\n".join([
+              "## Status",
+              "",
+              "TIDY-S1 — Intake & Evidence is implemented and locally verified.",
+              "",
+              "TIDY-S2 — Classification is implemented and locally verified.",
+              "",
+              "S2 consumes fact-only `FileEvidence`, resolves confirmed-user and known-system",
+              "rules deterministically, and uses a bounded model-independent classifier",
+              "provider only when deterministic knowledge cannot decide. Classification has",
+              "no filesystem mutation authority; unresolved evidence remains explicit.",
+              "",
+              "Next architectural subsystem: TIDY-S3 — Policy & Planning.",
+          ])
           if readme.count(old_block) != 1:
               raise SystemExit("Expected exactly one pre-S2 README status block")
           readme_path.write_text(readme.replace(old_block, new_block, 1), encoding="utf-8-sig")
