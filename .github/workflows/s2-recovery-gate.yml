@@ -1,20 +1,66 @@
-name: S2 Recovery Gate
+name: S2 Recovery Closure
 
 on:
   push:
     branches:
       - build/tidy-s2-classification-byte
 
+permissions:
+  contents: write
+
 jobs:
-  verify:
+  verify-and-close:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install uv
         run: python -m pip install uv
+      - name: Apply approved S2 status documentation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          spec_path = Path("docs/superpowers/specs/2026-08-31-tidy-s2-classification-design.md")
+          spec = spec_path.read_text(encoding="utf-8")
+          old_status = "Status: Approved design, pending user spec review"
+          new_status = "Status: Approved design"
+          if spec.count(old_status) != 1:
+              raise SystemExit("Expected exactly one pending S2 design status")
+          spec_path.write_text(spec.replace(old_status, new_status, 1), encoding="utf-8")
+
+          readme_path = Path("README.md")
+          readme = readme_path.read_text(encoding="utf-8-sig")
+          old_block = """## Status
+
+TIDY-S1 — Intake & Evidence is implemented and locally verified.
+
+S1 provides read-only, non-recursive inbox discovery, repeated-observation
+stability tracking, streamed SHA-256 fingerprinting, post-hash revalidation,
+and fact-only `FileEvidence` output. Classification, learning, policy, and
+filesystem mutation remain outside the subsystem boundary.
+
+Next architectural subsystem: TIDY-S2 — Classification."""
+          new_block = """## Status
+
+TIDY-S1 — Intake & Evidence is implemented and locally verified.
+
+TIDY-S2 — Classification is implemented and locally verified.
+
+S2 consumes fact-only `FileEvidence`, resolves confirmed-user and known-system
+rules deterministically, and uses a bounded model-independent classifier
+provider only when deterministic knowledge cannot decide. Classification has
+no filesystem mutation authority; unresolved evidence remains explicit.
+
+Next architectural subsystem: TIDY-S3 — Policy & Planning."""
+          if readme.count(old_block) != 1:
+              raise SystemExit("Expected exactly one pre-S2 README status block")
+          readme_path.write_text(readme.replace(old_block, new_block, 1), encoding="utf-8-sig")
+          PY
       - name: Full pytest
         run: uv run pytest
       - name: Ruff
@@ -49,3 +95,15 @@ jobs:
           assert len(set(owners)) == 53
           print("A01-A53: exactly one owner each")
           PY
+      - name: Diff check
+        run: git diff --check
+      - name: Inspect closure status
+        run: git status --short
+      - name: Commit verified status documentation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md docs/superpowers/specs/2026-08-31-tidy-s2-classification-design.md
+          git diff --cached --check
+          git commit -m "docs: close TIDY-S2 classification"
+          git push origin HEAD:build/tidy-s2-classification-byte
