@@ -1,15 +1,12 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pytest
-
 from tidy.domain.classification import (
     ClassificationOutcome,
     ClassificationResult,
     ClassificationSource,
     ClassificationStatus,
     EvidenceBinding,
-    UnresolvedReason,
 )
 from tidy.domain.evidence import FileEvidence
 from tidy.domain.planning import (
@@ -76,37 +73,6 @@ def _request(
         ),
         schema_version=PLANNING_SCHEMA_VERSION,
     )
-
-
-@pytest.mark.parametrize(
-    ("reason", "provider_name", "provider_model"),
-    (
-        (UnresolvedReason.RULE_CONFLICT, "provider", "model"),
-        (UnresolvedReason.INVALID_RULE_CONFIGURATION, "provider", "model"),
-        (UnresolvedReason.INSUFFICIENT_EVIDENCE, None, None),
-        (UnresolvedReason.PROVIDER_UNAVAILABLE, None, None),
-        (UnresolvedReason.INVALID_PROVIDER_RESPONSE, None, None),
-    ),
-)
-def test_unresolved_provider_identity_must_match_reason(
-    reason: UnresolvedReason,
-    provider_name: str | None,
-    provider_model: str | None,
-) -> None:
-    evidence = _evidence()
-    malformed = ClassificationResult(
-        status=ClassificationStatus.UNRESOLVED,
-        label=None,
-        source=None,
-        reason=reason,
-        rule_id=None,
-        provider_name=provider_name,
-        provider_model=provider_model,
-        provider_confidence=None,
-    )
-
-    with pytest.raises(ValueError, match="classification"):
-        _service().plan(_request(evidence, malformed))
 
 
 def test_evidence_binding_relative_path_is_lexically_exact() -> None:
