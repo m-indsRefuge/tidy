@@ -11,10 +11,12 @@ from tidy.classification.rules import (
 )
 from tidy.domain.classification import (
     CLASSIFICATION_SCHEMA_VERSION,
+    ClassificationOutcome,
     ClassificationRequest,
     ClassificationResult,
     ClassificationRule,
     ClassificationStatus,
+    EvidenceBinding,
     RuleAuthority,
     UnresolvedReason,
 )
@@ -87,6 +89,21 @@ class ClassificationService:
             request.allowed_labels,
             self._provider_name,
             self._provider_model,
+        )
+
+    def classify_outcome(
+        self,
+        request: ClassificationRequest,
+    ) -> ClassificationOutcome:
+        result = self.classify(request)
+        evidence = request.evidence
+        return ClassificationOutcome(
+            evidence_binding=EvidenceBinding(
+                inbox_id=evidence.inbox_id,
+                relative_path=evidence.relative_path,
+                sha256=evidence.sha256,
+            ),
+            result=result,
         )
 
 

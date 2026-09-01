@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 from tidy.domain.evidence import FileEvidence
 
@@ -70,3 +71,16 @@ class ClassificationResult:
     provider_name: str | None
     provider_model: str | None
     provider_confidence: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceBinding:
+    inbox_id: str
+    relative_path: Path
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ClassificationOutcome:
+    evidence_binding: EvidenceBinding
+    result: ClassificationResult
