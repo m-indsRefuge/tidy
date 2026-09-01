@@ -46,9 +46,13 @@ TIDY-S1 — Intake & Evidence is implemented and locally verified.
 
 TIDY-S2 — Classification is implemented and locally verified.
 
-S2 consumes fact-only `FileEvidence`, resolves confirmed-user and known-system
-rules deterministically, and uses a bounded model-independent classifier
-provider only when deterministic knowledge cannot decide. Classification has
-no filesystem mutation authority; unresolved evidence remains explicit.
+TIDY-S3 — Policy & Planning is implemented and locally verified.
 
-Next architectural subsystem: TIDY-S3 — Policy & Planning.
+S3 consumes S1 `FileEvidence` plus its bound S2 classification outcome,
+applies globally validated exact-label destination policy, and produces either
+one immutable deterministic move authorization or an explicit blocked result.
+S3 has no live filesystem access or mutation authority; concrete root
+resolution, live precondition checks, execution, journaling, and recovery
+remain downstream responsibilities.
+
+Next architectural subsystem: TIDY-S4 — Execution & Recovery.
