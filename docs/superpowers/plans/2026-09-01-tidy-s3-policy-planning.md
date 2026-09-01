@@ -4,7 +4,7 @@
 
 **Goal:** Implement TIDY-S3 as a deterministic, filesystem-isolated policy layer that consumes S1 evidence plus its bound S2 outcome and returns either one immutable move authorization or an explicit blocked result.
 
-**Architecture:** S2 gains only a minimal immutable evidence-binding envelope; its existing `ClassificationResult` semantics remain unchanged. S3 validates its complete policy configuration, verifies the S2 result belongs to the supplied evidence, maps one exact classification label to one approved destination root ID and literal directory tuple, derives a fixed-precondition move plan, and computes a deterministic SHA-256 plan ID. S3 never resolves root IDs to concrete paths, reads live filesystem state, invokes a model, or executes a mutation.
+**Architecture:** S2 gains only a minimal immutable evidence-binding envelope; its existing `ClassificationResult` semantics remain unchanged. S3 validates the complete configured destination policy, verifies that the S2 result belongs to the supplied S1 evidence, maps one exact classification label to one approved destination root ID and literal directory tuple, derives one fixed-precondition move plan, and computes a deterministic SHA-256 `plan_id`. S3 never resolves root IDs to concrete paths, reads live filesystem state, invokes a model, or executes a mutation.
 
 **Tech Stack:** Python 3.12+, standard library only in production, frozen/slotted dataclasses, `StrEnum`, `pathlib.Path`, `hashlib`, `json`, pytest, Ruff, uv/hatch build tooling.
 
@@ -13,16 +13,17 @@
 ## Global Constraints
 
 - Planning schema is exactly `tidy.planning.v1`.
-- Production dependencies remain empty; do not add a model SDK, filesystem helper library, database, or serialization dependency.
-- S3 may authorize only one move with exact original-filename preservation and creation of missing members of one exact destination directory chain.
-- Destination policies contain only approved `root_id` values and literal `tuple[str, ...]` directory segments; S3 never receives or emits concrete destination-root paths.
-- S3 performs no filesystem reads, stats, traversal, existence checks, hashing of live files, or mutation.
+- Production dependencies remain empty; do not add model/provider SDKs, filesystem helper libraries, databases, or serialization packages.
+- S3 may authorize only one move, exact original-filename preservation, and creation of missing members of one exact destination directory chain.
+- Destination policies contain only approved `root_id` values and literal `tuple[str, ...]` directory segments.
+- S3 never receives or emits concrete destination-root paths.
+- S3 performs no filesystem reads, stats, traversal, existence checks, live hashing, or mutation.
 - S3 performs no model/provider calls and imports no S4/execution code.
 - An unresolved S2 result can never produce a plan.
 - Destination collisions fail closed through the fixed `DESTINATION_MUST_NOT_EXIST` plan precondition; S3 never auto-renames or overwrites.
-- Every structurally valid but unsafe per-file outcome returns one closed `PlanningBlockedReason`; malformed API contracts raise `ValueError`.
+- Structurally valid but unsafe per-file outcomes return one closed `PlanningBlockedReason`; malformed API contracts raise `ValueError`.
 - Global policy configuration is validated before evidence binding or per-file policy lookup; any invalid policy disables planning with `BLOCKED / INVALID_POLICY_CONFIGURATION`.
-- Model-derived classifications are eligible for the same deterministic policy path as deterministic classifications.
+- Model-derived classifications use the same deterministic destination-policy path as deterministic classifications.
 - `plan_id` is deterministic SHA-256 over a platform-neutral canonical authorization payload and uses no clock, randomness, UUID, caller-supplied ID, concrete root path, or runtime filesystem state.
 - Each acceptance ID A01-A50 has exactly one owning test named `test_s3_aNN_...`.
 - Canonical repository verification is `uv run pytest`, `uv run ruff check .`, and `uv build`.
@@ -31,15 +32,13 @@
 
 ## File Structure
 
-The implementation must use these boundaries.
-
 - Modify `src/tidy/domain/classification.py` only to add `EvidenceBinding` and `ClassificationOutcome`.
 - Modify `src/tidy/classification/service.py` only to add `ClassificationService.classify_outcome(...)`; preserve `classify(...) -> ClassificationResult`.
-- Create `src/tidy/domain/planning.py` for S3 domain constants, enums, frozen contracts, and `PlanningResult` shape invariants.
+- Create `src/tidy/domain/planning.py` for the S3 schema constant, enums, frozen contracts, and `PlanningResult` shape invariants.
 - Create `src/tidy/policy/validation.py` for complete configuration validation and literal destination-segment validation.
 - Create `src/tidy/policy/plan_id.py` for canonical authorization encoding and SHA-256 plan-ID derivation.
-- Create `src/tidy/policy/service.py` for request/outcome contract validation, strict decision order, destination derivation, and plan construction.
-- Add focused tests under `tests/unit/classification/`, `tests/unit/domain/`, and `tests/unit/policy/`.
+- Create `src/tidy/policy/service.py` for request/outcome validation, strict decision order, destination derivation, and plan construction.
+- Create focused tests under `tests/unit/classification/`, `tests/unit/domain/`, and `tests/unit/policy/`.
 - Create `tests/architecture/test_s3_boundaries.py` for hostile-filesystem and static dependency/call boundaries.
 - Modify `README.md` only after the complete S3 verification gate is green.
 
@@ -60,11 +59,11 @@ The implementation must use these boundaries.
   - `EvidenceBinding(inbox_id: str, relative_path: Path, sha256: str)`
   - `ClassificationOutcome(evidence_binding: EvidenceBinding, result: ClassificationResult)`
   - `ClassificationService.classify_outcome(request: ClassificationRequest) -> ClassificationOutcome`
-- Preserves: `ClassificationService.classify(request: ClassificationRequest) -> ClassificationResult` exactly as the existing public classification API.
+- Preserves: `ClassificationService.classify(request: ClassificationRequest) -> ClassificationResult` exactly as the existing public S2 API.
 
 - [ ] **Step 1: Write the failing S2 envelope tests**
 
-Create `tests/unit/classification/test_outcome.py` with focused ownership for A03-A04. Use a deterministic rule so provider state cannot make the comparison ambiguous.
+Create `tests/unit/classification/test_outcome.py`:
 
 ```python
 from pathlib import Path
@@ -149,13 +148,11 @@ def test_s3_a04_classification_result_semantics_are_unchanged_by_envelope(
 
 - [ ] **Step 2: Run the focused tests and verify RED**
 
-Run:
-
 ```bash
 uv run pytest tests/unit/classification/test_outcome.py -v
 ```
 
-Expected: collection/import failure because `ClassificationOutcome` and `classify_outcome` do not exist yet.
+Expected: collection/import failure because `ClassificationOutcome` and `classify_outcome` do not exist.
 
 - [ ] **Step 3: Add the immutable S2 envelope contracts**
 
@@ -175,11 +172,11 @@ class ClassificationOutcome:
     result: ClassificationResult
 ```
 
-The file already imports `Path`; add no new dependency.
+The file already imports `Path`; add no dependency.
 
 - [ ] **Step 4: Add `ClassificationService.classify_outcome` without changing `classify`**
 
-Import `ClassificationOutcome` and `EvidenceBinding` in `src/tidy/classification/service.py`, then add this method directly after `classify`:
+Import `ClassificationOutcome` and `EvidenceBinding` in `src/tidy/classification/service.py`, then add:
 
 ```python
 def classify_outcome(
@@ -198,34 +195,25 @@ def classify_outcome(
     )
 ```
 
-Do not duplicate classification logic. Calling `self.classify(request)` guarantees the envelope is created only after the existing S2 request validation and exact classification path complete.
+Do not duplicate classification logic. `self.classify(request)` remains the single S2 decision path.
 
 - [ ] **Step 5: Run focused and existing S2 tests**
-
-Run:
 
 ```bash
 uv run pytest tests/unit/classification/test_outcome.py tests/unit/classification tests/unit/domain/test_classification.py tests/architecture/test_s2_boundaries.py -v
 ```
 
-Expected: all selected tests pass; existing S2 result behavior remains unchanged.
+Expected: all selected tests pass; existing S2 behavior remains unchanged.
 
-- [ ] **Step 6: Run Ruff on the changed files**
-
-Run:
+- [ ] **Step 6: Run Ruff and commit Task 1**
 
 ```bash
 uv run ruff check src/tidy/domain/classification.py src/tidy/classification/service.py tests/unit/classification/test_outcome.py
-```
-
-Expected: `All checks passed!`
-
-- [ ] **Step 7: Commit Task 1**
-
-```bash
 git add src/tidy/domain/classification.py src/tidy/classification/service.py tests/unit/classification/test_outcome.py
 git commit -m "feat: bind S2 outcomes to evidence"
 ```
+
+Expected: Ruff prints `All checks passed!` before commit.
 
 ---
 
@@ -243,62 +231,91 @@ git commit -m "feat: bind S2 outcomes to evidence"
 - Consumes: `FileEvidence`, `ClassificationOutcome`, `ClassificationSource`.
 - Produces:
   - `PLANNING_SCHEMA_VERSION = "tidy.planning.v1"`
-  - `PlanningStatus`
-  - `PlanningBlockedReason`
-  - `PlanPrecondition`
-  - `DestinationPolicy`
-  - `PlanningConfiguration`
-  - `PlanningRequest`
-  - `PlannedSource`
-  - `PlannedDestination`
-  - `MutationPlan`
-  - `PlanningResult`
+  - `PlanningStatus`, `PlanningBlockedReason`, `PlanPrecondition`
+  - `DestinationPolicy`, `PlanningConfiguration`, `PlanningRequest`
+  - `PlannedSource`, `PlannedDestination`, `MutationPlan`, `PlanningResult`
   - `validate_relative_directory(value: object) -> bool`
   - `validate_planning_configuration(configuration: PlanningConfiguration) -> bool`
 
-- [ ] **Step 1: Write failing domain-contract tests for A06-A07**
+- [ ] **Step 1: Write failing domain-contract tests A06-A07**
 
 Create `tests/unit/domain/test_planning.py`:
 
 ```python
+from pathlib import Path
+
 import pytest
 
+from tidy.domain.classification import ClassificationSource
 from tidy.domain.planning import (
+    PLANNING_SCHEMA_VERSION,
     MutationPlan,
+    PlanPrecondition,
+    PlannedDestination,
+    PlannedSource,
     PlanningBlockedReason,
     PlanningResult,
     PlanningStatus,
 )
 
 
-def test_s3_a06_planned_result_requires_plan_and_no_blocked_reason() -> None:
-    plan = object()
+def _plan() -> MutationPlan:
+    return MutationPlan(
+        schema_version=PLANNING_SCHEMA_VERSION,
+        plan_id="a" * 64,
+        source=PlannedSource(
+            "downloads",
+            Path("invoice.pdf"),
+            "b" * 64,
+            10,
+            20,
+        ),
+        destination=PlannedDestination("documents", (), "invoice.pdf"),
+        authorized_directories=(),
+        preconditions=(PlanPrecondition.DESTINATION_MUST_NOT_EXIST,),
+        classification_label="DOCUMENT",
+        classification_source=ClassificationSource.KNOWN_SYSTEM_RULE,
+        policy_id="documents.document",
+    )
+
+
+def test_s3_a06_planned_result_requires_mutation_plan_and_no_reason() -> None:
     with pytest.raises(ValueError):
         PlanningResult(PlanningStatus.PLANNED, None, None)
     with pytest.raises(ValueError):
+        PlanningResult(PlanningStatus.PLANNED, object(), None)
+    with pytest.raises(ValueError):
         PlanningResult(
             PlanningStatus.PLANNED,
-            plan,
+            _plan(),
             PlanningBlockedReason.NO_DESTINATION_POLICY,
         )
+    valid = PlanningResult(PlanningStatus.PLANNED, _plan(), None)
+    assert valid.plan == _plan()
 
 
-def test_s3_a07_blocked_result_requires_no_plan_and_exactly_one_reason() -> None:
+def test_s3_a07_blocked_result_requires_no_plan_and_typed_reason() -> None:
     with pytest.raises(ValueError):
         PlanningResult(PlanningStatus.BLOCKED, None, None)
     with pytest.raises(ValueError):
         PlanningResult(
             PlanningStatus.BLOCKED,
-            object(),
+            _plan(),
             PlanningBlockedReason.NO_DESTINATION_POLICY,
         )
+    with pytest.raises(ValueError):
+        PlanningResult(PlanningStatus.BLOCKED, None, "no_destination_policy")
+    valid = PlanningResult(
+        PlanningStatus.BLOCKED,
+        None,
+        PlanningBlockedReason.NO_DESTINATION_POLICY,
+    )
+    assert valid.plan is None
 ```
 
-The test imports `MutationPlan` intentionally so collection proves the complete domain module exists; the variable is not instantiated here.
+- [ ] **Step 2: Write failing configuration tests A08-A17**
 
-- [ ] **Step 2: Write failing configuration tests for A08-A17**
-
-Create `tests/unit/policy/test_validation.py` with local helpers and one owning test per acceptance ID:
+Create `tests/unit/policy/test_validation.py`:
 
 ```python
 from tidy.domain.planning import DestinationPolicy, PlanningConfiguration
@@ -306,7 +323,7 @@ from tidy.policy.validation import validate_planning_configuration
 
 
 def _policy(
-    policy_id: object = "documents",
+    policy_id: object = "documents.document",
     label: object = "DOCUMENT",
     root_id: object = "documents",
     directory: object = ("Sorted",),
@@ -336,7 +353,12 @@ def test_s3_a10_policy_ids_must_be_nonempty_strings_and_unique() -> None:
     assert not validate_planning_configuration(_config(policies=(_policy(policy_id=""),)))
     assert not validate_planning_configuration(_config(policies=(_policy(policy_id=1),)))
     assert not validate_planning_configuration(
-        _config(policies=(_policy(policy_id="same"), _policy(policy_id="same", label="IMAGE")))
+        _config(
+            policies=(
+                _policy(policy_id="same"),
+                _policy(policy_id="same", label="IMAGE"),
+            )
+        )
     )
 
 
@@ -356,7 +378,7 @@ def test_s3_a12_duplicate_policy_labels_make_configuration_invalid() -> None:
     )
 
 
-def test_s3_a13_policy_root_id_must_be_approved() -> None:
+def test_s3_a13_policy_root_id_must_belong_to_approved_set() -> None:
     assert not validate_planning_configuration(
         _config(policies=(_policy(root_id="archive"),))
     )
@@ -372,7 +394,9 @@ def test_s3_a14_relative_directory_must_be_tuple_of_literal_segments() -> None:
 
 
 def test_s3_a15_empty_directory_tuple_is_valid_root_level_destination() -> None:
-    assert validate_planning_configuration(_config(policies=(_policy(directory=()),)))
+    assert validate_planning_configuration(
+        _config(policies=(_policy(directory=()),))
+    )
 
 
 def test_s3_a16_unsafe_literal_directory_segments_are_invalid() -> None:
@@ -393,15 +417,13 @@ def test_s3_a17_any_invalid_policy_invalidates_complete_configuration() -> None:
     assert not validate_planning_configuration(configuration)
 ```
 
-- [ ] **Step 3: Run domain/configuration tests and verify RED**
-
-Run:
+- [ ] **Step 3: Run Task-2 tests and verify RED**
 
 ```bash
 uv run pytest tests/unit/domain/test_planning.py tests/unit/policy/test_validation.py -v
 ```
 
-Expected: collection/import failure because S3 contracts and validation module do not exist.
+Expected: collection/import failure because S3 contracts and validation do not exist.
 
 - [ ] **Step 4: Create the frozen S3 domain contracts**
 
@@ -492,17 +514,20 @@ class PlanningResult:
 
     def __post_init__(self) -> None:
         if self.status is PlanningStatus.PLANNED:
-            if self.plan is None or self.reason is not None:
-                raise ValueError("planned result requires plan and no reason")
+            if not isinstance(self.plan, MutationPlan) or self.reason is not None:
+                raise ValueError("planned result requires MutationPlan and no reason")
             return
         if self.status is PlanningStatus.BLOCKED:
-            if self.plan is not None or self.reason is None:
-                raise ValueError("blocked result requires reason and no plan")
+            if self.plan is not None or not isinstance(
+                self.reason,
+                PlanningBlockedReason,
+            ):
+                raise ValueError("blocked result requires typed reason and no plan")
             return
         raise ValueError("status is unsupported")
 ```
 
-Do not validate `DestinationPolicy` or `PlanningConfiguration` in dataclass constructors. Structurally invalid configuration is an expected fail-closed planning outcome, not a constructor exception.
+Do not add constructor validation to `DestinationPolicy` or `PlanningConfiguration`; structural configuration defects are expected `BLOCKED` outcomes at planning time.
 
 - [ ] **Step 5: Implement complete configuration validation**
 
@@ -567,59 +592,16 @@ def validate_planning_configuration(
     return True
 ```
 
-- [ ] **Step 6: Fix the A06 test to use the real `MutationPlan` type without inventing a fake plan**
-
-Replace the `plan = object()` portion of A06 with a helper that constructs a minimal valid plan. This keeps `PlanningResult.plan` aligned with the declared type instead of relying on Python's runtime permissiveness:
-
-```python
-from pathlib import Path
-
-from tidy.domain.classification import ClassificationSource
-from tidy.domain.planning import (
-    PLANNING_SCHEMA_VERSION,
-    MutationPlan,
-    PlanPrecondition,
-    PlannedDestination,
-    PlannedSource,
-    PlanningBlockedReason,
-    PlanningResult,
-    PlanningStatus,
-)
-
-
-def _plan() -> MutationPlan:
-    return MutationPlan(
-        schema_version=PLANNING_SCHEMA_VERSION,
-        plan_id="a" * 64,
-        source=PlannedSource("downloads", Path("invoice.pdf"), "b" * 64, 10, 20),
-        destination=PlannedDestination("documents", (), "invoice.pdf"),
-        authorized_directories=(),
-        preconditions=(PlanPrecondition.DESTINATION_MUST_NOT_EXIST,),
-        classification_label="DOCUMENT",
-        classification_source=ClassificationSource.KNOWN_SYSTEM_RULE,
-        policy_id="documents",
-    )
-```
-
-Then use `plan = _plan()` in both A06 invalid-shape assertions.
-
-- [ ] **Step 7: Run focused tests and Ruff**
-
-Run:
+- [ ] **Step 6: Run Task-2 tests, Ruff, and commit**
 
 ```bash
 uv run pytest tests/unit/domain/test_planning.py tests/unit/policy/test_validation.py -v
 uv run ruff check src/tidy/domain/planning.py src/tidy/policy/validation.py tests/unit/domain/test_planning.py tests/unit/policy/test_validation.py
-```
-
-Expected: all focused tests pass and Ruff reports `All checks passed!`.
-
-- [ ] **Step 8: Commit Task 2**
-
-```bash
 git add src/tidy/domain/planning.py src/tidy/policy/validation.py tests/unit/domain/test_planning.py tests/unit/policy/test_validation.py
 git commit -m "feat: add S3 planning contracts"
 ```
+
+Expected: all focused tests pass and Ruff prints `All checks passed!` before commit.
 
 ---
 
@@ -636,15 +618,17 @@ git commit -m "feat: add S3 planning contracts"
 - Produces:
   - `canonical_authorization_payload(...) -> bytes`
   - `derive_plan_id(...) -> str`
-- The service in Task 4 will pass every authority-bearing/provenance field explicitly; `plan_id` is not part of its own input.
+- `derive_plan_id` accepts every authority-bearing/provenance field explicitly and never accepts an existing `plan_id`.
 
-- [ ] **Step 1: Write failing plan-ID tests for A39-A42**
+- [ ] **Step 1: Write failing plan-ID tests A39-A42**
 
 Create `tests/unit/policy/test_plan_id.py`:
 
 ```python
 import hashlib
+import inspect
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from tidy.domain.classification import ClassificationSource
@@ -686,21 +670,49 @@ def test_s3_a39_plan_id_is_sha256_of_canonical_payload() -> None:
 
 
 def test_s3_a40_plan_id_has_no_clock_random_or_caller_identifier_input() -> None:
+    parameters = inspect.signature(derive_plan_id).parameters
+    assert "plan_id" not in parameters
+    assert "created_at" not in parameters
+    assert "timestamp" not in parameters
     fields = _fields()
-    first = derive_plan_id(**fields)
-    second = derive_plan_id(**fields)
-    assert first == second
+    assert derive_plan_id(**fields) == derive_plan_id(**fields)
 
 
-def test_s3_a41_changing_authority_field_changes_payload_and_plan_id() -> None:
-    fields = _fields()
-    first_payload = canonical_authorization_payload(**fields)
-    first_id = derive_plan_id(**fields)
-    fields["policy_id"] = "documents.invoice.changed"
-    second_payload = canonical_authorization_payload(**fields)
-    second_id = derive_plan_id(**fields)
-    assert second_payload != first_payload
-    assert second_id != first_id
+def test_s3_a41_changing_any_authority_field_changes_payload_and_id() -> None:
+    base = _fields()
+    source = base["source"]
+    destination = base["destination"]
+    assert isinstance(source, PlannedSource)
+    assert isinstance(destination, PlannedDestination)
+
+    variants = (
+        {**base, "schema_version": "tidy.planning.v2"},
+        {**base, "source": replace(source, inbox_id="other")},
+        {**base, "source": replace(source, relative_path=Path("other.pdf"))},
+        {**base, "source": replace(source, expected_sha256="b" * 64)},
+        {**base, "source": replace(source, expected_size_bytes=124)},
+        {**base, "source": replace(source, expected_modified_ns=457)},
+        {**base, "destination": replace(destination, root_id="archive")},
+        {
+            **base,
+            "destination": replace(destination, relative_directory=("Finance",)),
+        },
+        {**base, "destination": replace(destination, filename="other.pdf")},
+        {**base, "authorized_directories": (("Finance",),)},
+        {**base, "preconditions": ()},
+        {**base, "classification_label": "IMAGE"},
+        {
+            **base,
+            "classification_source": ClassificationSource.KNOWN_SYSTEM_RULE,
+        },
+        {**base, "policy_id": "documents.changed"},
+    )
+
+    base_payload = canonical_authorization_payload(**base)
+    base_id = derive_plan_id(**base)
+    for variant in variants:
+        assert canonical_authorization_payload(**variant) != base_payload
+        assert derive_plan_id(**variant) != base_id
 
 
 def test_s3_a42_canonical_directory_encoding_is_segment_based_and_platform_neutral() -> None:
@@ -713,9 +725,7 @@ def test_s3_a42_canonical_directory_encoding_is_segment_based_and_platform_neutr
     assert "Finance/Invoices" not in payload.decode("utf-8")
 ```
 
-- [ ] **Step 2: Run the focused plan-ID tests and verify RED**
-
-Run:
+- [ ] **Step 2: Run plan-ID tests and verify RED**
 
 ```bash
 uv run pytest tests/unit/policy/test_plan_id.py -v
@@ -723,7 +733,7 @@ uv run pytest tests/unit/policy/test_plan_id.py -v
 
 Expected: collection/import failure because `tidy.policy.plan_id` does not exist.
 
-- [ ] **Step 3: Implement a fixed-order JSON-array canonical encoding**
+- [ ] **Step 3: Implement fixed-order canonical encoding and SHA-256 derivation**
 
 Create `src/tidy/policy/plan_id.py`:
 
@@ -804,25 +814,18 @@ def derive_plan_id(
     return hashlib.sha256(payload).hexdigest()
 ```
 
-The nested JSON arrays are the collision-safe field framing: sequence boundaries, strings, integers, and segment arrays are encoded unambiguously, without OS path joining. Do not add timestamps, UUIDs, `random`, `time`, `secrets`, or concrete root paths.
+Nested JSON arrays provide explicit sequence framing and preserve field/segment order without OS path joining.
 
-- [ ] **Step 4: Run focused tests and Ruff**
-
-Run:
+- [ ] **Step 4: Run plan-ID tests, Ruff, and commit**
 
 ```bash
 uv run pytest tests/unit/policy/test_plan_id.py -v
 uv run ruff check src/tidy/policy/plan_id.py tests/unit/policy/test_plan_id.py
-```
-
-Expected: all four acceptance tests pass and Ruff reports `All checks passed!`.
-
-- [ ] **Step 5: Commit Task 3**
-
-```bash
 git add src/tidy/policy/plan_id.py tests/unit/policy/test_plan_id.py
 git commit -m "feat: add deterministic S3 plan identity"
 ```
+
+Expected: A39-A42 pass and Ruff prints `All checks passed!`.
 
 ---
 
@@ -835,20 +838,15 @@ git commit -m "feat: add deterministic S3 plan identity"
 **Acceptance ownership:** A01, A02, A05, A18-A38.
 
 **Interfaces:**
-- Consumes:
-  - `PlanningConfiguration`
-  - `PlanningRequest`
-  - S2 `ClassificationOutcome`
-  - `validate_planning_configuration(...)`
-  - `derive_plan_id(...)`
+- Consumes: `PlanningConfiguration`, `PlanningRequest`, S2 `ClassificationOutcome`, `validate_planning_configuration(...)`, and `derive_plan_id(...)`.
 - Produces:
   - `PlanningService(configuration: PlanningConfiguration)`
   - `PlanningService.plan(request: PlanningRequest) -> PlanningResult`
-- Service construction rejects a non-`PlanningConfiguration` object as caller misuse. Structural defects inside a real `PlanningConfiguration` are preserved and become `BLOCKED / INVALID_POLICY_CONFIGURATION` during `plan(...)`.
+- A non-`PlanningConfiguration` constructor argument is caller misuse and raises `ValueError`. Structural defects inside a real configuration remain data and become `BLOCKED / INVALID_POLICY_CONFIGURATION` during `plan(...)`.
 
-- [ ] **Step 1: Create service-test helpers and schema/contract tests A01, A02, A05**
+- [ ] **Step 1: Create service-test helpers and contract tests A01, A02, A05**
 
-Start `tests/unit/policy/test_service.py` with exact factories for evidence, outcomes, configuration, and service requests:
+Create `tests/unit/policy/test_service.py` with these imports/helpers and tests:
 
 ```python
 from dataclasses import replace
@@ -907,7 +905,7 @@ def _classified_result(
 def _outcome(evidence, result: ClassificationResult | None = None) -> ClassificationOutcome:
     return ClassificationOutcome(
         EvidenceBinding(evidence.inbox_id, evidence.relative_path, evidence.sha256),
-        result or _classified_result(),
+        result if result is not None else _classified_result(),
     )
 
 
@@ -928,8 +926,22 @@ def _configuration(
 def _request(evidence, outcome: ClassificationOutcome | None = None) -> PlanningRequest:
     return PlanningRequest(
         evidence,
-        outcome or _outcome(evidence),
+        outcome if outcome is not None else _outcome(evidence),
         PLANNING_SCHEMA_VERSION,
+    )
+
+
+def _invalid_configuration() -> PlanningConfiguration:
+    return PlanningConfiguration(
+        ("documents",),
+        (
+            DestinationPolicy(
+                "bad",
+                "DOCUMENT",
+                "unknown-root",
+                ("Sorted",),
+            ),
+        ),
     )
 
 
@@ -939,9 +951,12 @@ def test_s3_a01_exact_planning_schema_is_accepted(evidence_factory) -> None:
 
 
 def test_s3_a02_unsupported_schema_is_rejected_before_policy_work(evidence_factory) -> None:
-    request = replace(_request(evidence_factory()), schema_version="tidy.planning.v2")
+    request = replace(
+        _request(evidence_factory()),
+        schema_version="tidy.planning.v2",
+    )
     with pytest.raises(ValueError, match="schema_version"):
-        PlanningService(_configuration()).plan(request)
+        PlanningService(_invalid_configuration()).plan(request)
 
 
 def test_s3_a05_malformed_classification_outcome_is_contract_error(evidence_factory) -> None:
@@ -963,66 +978,82 @@ def test_s3_a05_malformed_classification_outcome_is_contract_error(evidence_fact
         PlanningService(_configuration()).plan(_request(evidence, malformed))
 ```
 
-- [ ] **Step 2: Add decision-flow tests A18-A27**
+A02 deliberately uses invalid policy configuration: schema contract rejection must happen before configuration validation.
 
-Append these owning tests to `tests/unit/policy/test_service.py`:
+- [ ] **Step 2: Add decision-order tests A18-A27**
+
+Append:
 
 ```python
-def test_s3_a18_evidence_binding_is_checked_before_classification_is_trusted(
+def _unresolved(reason: UnresolvedReason) -> ClassificationResult:
+    return ClassificationResult(
+        ClassificationStatus.UNRESOLVED,
+        None,
+        None,
+        reason,
+        None,
+        None,
+        None,
+        None,
+    )
+
+
+def _deterministic_result(
+    source: ClassificationSource,
+    rule_id: str,
+) -> ClassificationResult:
+    return ClassificationResult(
+        ClassificationStatus.CLASSIFIED,
+        "DOCUMENT",
+        source,
+        None,
+        rule_id,
+        None,
+        None,
+        None,
+    )
+
+
+def test_s3_a18_binding_is_checked_before_classification_status_is_trusted(
     evidence_factory,
 ) -> None:
     evidence = evidence_factory()
-    mismatched = ClassificationOutcome(
+    outcome = ClassificationOutcome(
         EvidenceBinding("other", evidence.relative_path, evidence.sha256),
-        _classified_result(),
+        _unresolved(UnresolvedReason.INSUFFICIENT_EVIDENCE),
     )
-    result = PlanningService(_configuration()).plan(_request(evidence, mismatched))
+    result = PlanningService(_configuration()).plan(_request(evidence, outcome))
     assert result.reason is PlanningBlockedReason.CLASSIFICATION_EVIDENCE_MISMATCH
 
 
 def test_s3_a19_binding_mismatch_returns_explicit_blocked_reason(evidence_factory) -> None:
     evidence = evidence_factory()
-    mismatched = ClassificationOutcome(
+    outcome = ClassificationOutcome(
         EvidenceBinding(evidence.inbox_id, Path("other.pdf"), evidence.sha256),
         _classified_result(),
     )
-    result = PlanningService(_configuration()).plan(_request(evidence, mismatched))
+    result = PlanningService(_configuration()).plan(_request(evidence, outcome))
     assert result.status is PlanningStatus.BLOCKED
     assert result.plan is None
     assert result.reason is PlanningBlockedReason.CLASSIFICATION_EVIDENCE_MISMATCH
 
 
-def test_s3_a20_unresolved_s2_result_is_blocked(evidence_factory) -> None:
+def test_s3_a20_valid_unresolved_s2_result_is_blocked(evidence_factory) -> None:
     evidence = evidence_factory()
-    unresolved = ClassificationResult(
-        ClassificationStatus.UNRESOLVED,
-        None,
-        None,
-        UnresolvedReason.INSUFFICIENT_EVIDENCE,
-        None,
-        "provider",
-        "model",
-        None,
+    outcome = _outcome(
+        evidence,
+        _unresolved(UnresolvedReason.INSUFFICIENT_EVIDENCE),
     )
-    result = PlanningService(_configuration()).plan(_request(evidence, _outcome(evidence, unresolved)))
+    result = PlanningService(_configuration()).plan(_request(evidence, outcome))
     assert result.reason is PlanningBlockedReason.UNRESOLVED_CLASSIFICATION
 
 
 def test_s3_a21_unresolved_classification_has_no_destination_fallback(evidence_factory) -> None:
     evidence = evidence_factory()
-    unresolved = ClassificationResult(
-        ClassificationStatus.UNRESOLVED,
-        None,
-        None,
-        UnresolvedReason.RULE_CONFLICT,
-        None,
-        None,
-        None,
-        None,
-    )
-    result = PlanningService(_configuration()).plan(_request(evidence, _outcome(evidence, unresolved)))
-    assert result.plan is None
+    outcome = _outcome(evidence, _unresolved(UnresolvedReason.RULE_CONFLICT))
+    result = PlanningService(_configuration()).plan(_request(evidence, outcome))
     assert result.status is PlanningStatus.BLOCKED
+    assert result.plan is None
 
 
 def test_s3_a22_exact_case_sensitive_label_selects_policy(evidence_factory) -> None:
@@ -1045,42 +1076,24 @@ def test_s3_a24_absent_policy_is_blocked(evidence_factory) -> None:
     assert result.reason is PlanningBlockedReason.NO_DESTINATION_POLICY
 
 
-@pytest.mark.parametrize(
-    ("source", "rule_id"),
-    [
-        (ClassificationSource.CONFIRMED_USER_RULE, "rule.document"),
-        (ClassificationSource.KNOWN_SYSTEM_RULE, "rule.document"),
-    ],
-)
-def _deterministic_source_result(source: ClassificationSource, rule_id: str) -> ClassificationResult:
-    return ClassificationResult(
-        ClassificationStatus.CLASSIFIED,
-        "DOCUMENT",
-        source,
-        None,
-        rule_id,
-        None,
-        None,
-        None,
-    )
-
-
 def test_s3_a25_confirmed_user_rule_classification_may_plan(evidence_factory) -> None:
     evidence = evidence_factory()
     outcome = _outcome(
         evidence,
-        _deterministic_source_result(ClassificationSource.CONFIRMED_USER_RULE, "rule.user"),
+        _deterministic_result(ClassificationSource.CONFIRMED_USER_RULE, "rule.user"),
     )
-    assert PlanningService(_configuration()).plan(_request(evidence, outcome)).status is PlanningStatus.PLANNED
+    result = PlanningService(_configuration()).plan(_request(evidence, outcome))
+    assert result.status is PlanningStatus.PLANNED
 
 
 def test_s3_a26_known_system_rule_classification_may_plan(evidence_factory) -> None:
     evidence = evidence_factory()
     outcome = _outcome(
         evidence,
-        _deterministic_source_result(ClassificationSource.KNOWN_SYSTEM_RULE, "rule.system"),
+        _deterministic_result(ClassificationSource.KNOWN_SYSTEM_RULE, "rule.system"),
     )
-    assert PlanningService(_configuration()).plan(_request(evidence, outcome)).status is PlanningStatus.PLANNED
+    result = PlanningService(_configuration()).plan(_request(evidence, outcome))
+    assert result.status is PlanningStatus.PLANNED
 
 
 def test_s3_a27_model_inference_uses_same_deterministic_policy_path(evidence_factory) -> None:
@@ -1095,14 +1108,14 @@ def test_s3_a27_model_inference_uses_same_deterministic_policy_path(evidence_fac
     assert result.plan.destination.root_id == "documents"
 ```
 
-Do not use `@pytest.mark.parametrize` on a helper function. Keep `_deterministic_source_result` as an ordinary helper exactly as shown minus any decorator; the two acceptance tests own A25 and A26 individually.
-
-- [ ] **Step 3: Add plan-authority and determinism tests A28-A38**
+- [ ] **Step 3: Add plan-authority and deterministic-result tests A28-A38**
 
 Append:
 
 ```python
-def test_s3_a28_destination_contains_only_root_id_segments_and_original_filename(evidence_factory) -> None:
+def test_s3_a28_destination_contains_only_root_segments_and_original_filename(
+    evidence_factory,
+) -> None:
     evidence = evidence_factory(filename="Invoice.PDF")
     plan = PlanningService(_configuration()).plan(_request(evidence)).plan
     assert plan is not None
@@ -1121,9 +1134,7 @@ def test_s3_a29_original_filename_is_preserved_exactly(evidence_factory) -> None
 def test_s3_a30_plan_contains_no_concrete_destination_root_path(evidence_factory) -> None:
     plan = PlanningService(_configuration()).plan(_request(evidence_factory())).plan
     assert plan is not None
-    assert not hasattr(plan.destination, "path")
-    assert not hasattr(plan.destination, "absolute_path")
-    assert plan.destination.root_id == "documents"
+    assert set(plan.destination.__slots__) == {"root_id", "relative_directory", "filename"}
 
 
 def test_s3_a31_source_identity_is_copied_from_s1_evidence(evidence_factory) -> None:
@@ -1143,7 +1154,9 @@ def test_s3_a31_source_identity_is_copied_from_s1_evidence(evidence_factory) -> 
     assert plan.source.expected_modified_ns == evidence.modified_ns
 
 
-def test_s3_a32_authorized_directory_chain_is_exact_ordered_prefixes(evidence_factory) -> None:
+def test_s3_a32_authorized_directory_chain_is_exact_ordered_prefixes(
+    evidence_factory,
+) -> None:
     configuration = _configuration(
         policies=(
             DestinationPolicy(
@@ -1179,14 +1192,23 @@ def test_s3_a34_v1_plan_has_exact_collision_precondition(evidence_factory) -> No
 
 
 def test_s3_a35_policy_cannot_weaken_collision_precondition(evidence_factory) -> None:
-    policy = DestinationPolicy("documents.document", "DOCUMENT", "documents", ("Sorted",))
+    policy = DestinationPolicy(
+        "documents.document",
+        "DOCUMENT",
+        "documents",
+        ("Sorted",),
+    )
     assert not hasattr(policy, "preconditions")
-    plan = PlanningService(_configuration(policies=(policy,))).plan(_request(evidence_factory())).plan
+    plan = PlanningService(_configuration(policies=(policy,))).plan(
+        _request(evidence_factory())
+    ).plan
     assert plan is not None
     assert plan.preconditions == (PlanPrecondition.DESTINATION_MUST_NOT_EXIST,)
 
 
-def test_s3_a36_service_has_no_collision_rename_or_overwrite_behavior(evidence_factory) -> None:
+def test_s3_a36_service_has_no_collision_rename_or_overwrite_behavior(
+    evidence_factory,
+) -> None:
     evidence = evidence_factory(filename="invoice.pdf")
     plan = PlanningService(_configuration()).plan(_request(evidence)).plan
     assert plan is not None
@@ -1195,7 +1217,7 @@ def test_s3_a36_service_has_no_collision_rename_or_overwrite_behavior(evidence_f
     assert not hasattr(plan, "collision_strategy")
 
 
-def test_s3_a37_plan_records_bounded_classification_and_policy_provenance(evidence_factory) -> None:
+def test_s3_a37_plan_records_classification_and_policy_provenance(evidence_factory) -> None:
     evidence = evidence_factory()
     outcome = _outcome(
         evidence,
@@ -1219,31 +1241,26 @@ def test_s3_a38_identical_inputs_produce_equal_plans_and_plan_ids(evidence_facto
     assert first.plan.plan_id == second.plan.plan_id
 ```
 
-- [ ] **Step 4: Add one auxiliary precedence test for globally invalid configuration**
+- [ ] **Step 4: Add auxiliary precedence coverage for global configuration failure**
 
-This is not an acceptance owner; its name must not contain an `Axx` token. It proves the design's strict order: configuration failure outranks binding mismatch and unresolved classification.
+This helper test is intentionally not an acceptance owner:
 
 ```python
-def test_invalid_global_configuration_precedes_per_file_safety_outcomes(evidence_factory) -> None:
+def test_invalid_global_configuration_precedes_per_file_safety_outcomes(
+    evidence_factory,
+) -> None:
     evidence = evidence_factory()
-    invalid_configuration = PlanningConfiguration(
-        ("documents",),
-        (
-            DestinationPolicy("good", "DOCUMENT", "documents", ("Sorted",)),
-            DestinationPolicy("bad", "IMAGE", "unknown", ("Images",)),
-        ),
-    )
-    mismatched = ClassificationOutcome(
+    outcome = ClassificationOutcome(
         EvidenceBinding("other", evidence.relative_path, evidence.sha256),
-        _classified_result(),
+        _unresolved(UnresolvedReason.INSUFFICIENT_EVIDENCE),
     )
-    result = PlanningService(invalid_configuration).plan(_request(evidence, mismatched))
+    result = PlanningService(_invalid_configuration()).plan(
+        _request(evidence, outcome)
+    )
     assert result.reason is PlanningBlockedReason.INVALID_POLICY_CONFIGURATION
 ```
 
-- [ ] **Step 5: Run the planning-service tests and verify RED**
-
-Run:
+- [ ] **Step 5: Run Task-4 tests and verify RED**
 
 ```bash
 uv run pytest tests/unit/policy/test_service.py -v
@@ -1251,12 +1268,13 @@ uv run pytest tests/unit/policy/test_service.py -v
 
 Expected: collection/import failure because `tidy.policy.service` does not exist.
 
-- [ ] **Step 6: Implement exact request and classification-outcome validation**
+- [ ] **Step 6: Implement request and classification-outcome contract validation**
 
-Create `src/tidy/policy/service.py` with these imports and validation helpers:
+Create `src/tidy/policy/service.py` with these imports/helpers:
 
 ```python
 import math
+from pathlib import Path
 
 from tidy.domain.classification import (
     ClassificationOutcome,
@@ -1289,7 +1307,7 @@ def _validate_file_evidence(evidence: FileEvidence) -> None:
         raise ValueError("evidence must be FileEvidence")
     if type(evidence.inbox_id) is not str or evidence.inbox_id == "":
         raise ValueError("evidence inbox_id is invalid")
-    if not hasattr(evidence.relative_path, "as_posix"):
+    if not isinstance(evidence.relative_path, Path):
         raise ValueError("evidence relative_path is invalid")
     if type(evidence.filename) is not str or evidence.filename == "":
         raise ValueError("evidence filename is invalid")
@@ -1312,6 +1330,7 @@ def _validate_classification_result(result: ClassificationResult) -> None:
             raise ValueError("classification source is invalid")
         if result.reason is not None:
             raise ValueError("classification reason is invalid")
+
         if result.source is ClassificationSource.MODEL_INFERENCE:
             if result.rule_id is not None:
                 raise ValueError("classification rule_id is invalid")
@@ -1337,8 +1356,10 @@ def _validate_classification_result(result: ClassificationResult) -> None:
         return
 
     if result.status is ClassificationStatus.UNRESOLVED:
-        if result.label is not None or result.source is not None or result.rule_id is not None:
+        if result.label is not None or result.source is not None:
             raise ValueError("classification unresolved shape is invalid")
+        if result.rule_id is not None:
+            raise ValueError("classification unresolved rule_id is invalid")
         if not isinstance(result.reason, UnresolvedReason):
             raise ValueError("classification unresolved reason is invalid")
         if result.provider_confidence is not None:
@@ -1361,7 +1382,7 @@ def _validate_classification_outcome(outcome: ClassificationOutcome) -> None:
         raise ValueError("classification evidence binding is invalid")
     if type(binding.inbox_id) is not str or binding.inbox_id == "":
         raise ValueError("classification evidence binding is invalid")
-    if not hasattr(binding.relative_path, "as_posix"):
+    if not isinstance(binding.relative_path, Path):
         raise ValueError("classification evidence binding is invalid")
     if type(binding.sha256) is not str or binding.sha256 == "":
         raise ValueError("classification evidence binding is invalid")
@@ -1377,7 +1398,7 @@ def _validate_request(request: PlanningRequest) -> None:
         raise ValueError("schema_version is unsupported")
 ```
 
-Do not inspect `FileEvidence.path`; validation uses only in-memory fields needed by S3.
+Do not inspect `FileEvidence.path`; all validation above is in-memory contract validation.
 
 - [ ] **Step 7: Implement the strict planning decision order**
 
@@ -1484,65 +1505,19 @@ class PlanningService:
         return PlanningResult(PlanningStatus.PLANNED, plan, None)
 ```
 
-This method order is normative: contract validation → complete configuration validation → evidence binding → unresolved check → exact policy lookup → pure plan derivation.
+The order is normative: contract validation → complete configuration validation → evidence binding → unresolved handling → exact policy lookup → pure plan derivation.
 
-- [ ] **Step 8: Remove the accidental pytest decorator from the service-test helper if present**
-
-The helper must be ordinary Python:
-
-```python
-def _deterministic_source_result(
-    source: ClassificationSource,
-    rule_id: str,
-) -> ClassificationResult:
-    return ClassificationResult(
-        ClassificationStatus.CLASSIFIED,
-        "DOCUMENT",
-        source,
-        None,
-        rule_id,
-        None,
-        None,
-        None,
-    )
-```
-
-- [ ] **Step 9: Run the focused service suite**
-
-Run:
+- [ ] **Step 8: Run focused S3 tests, S2 regressions, Ruff, and commit**
 
 ```bash
 uv run pytest tests/unit/policy/test_service.py -v
-```
-
-Expected: A01, A02, A05, A18-A38 and the auxiliary precedence test all pass.
-
-- [ ] **Step 10: Run all S3 unit tests plus S2 regression tests**
-
-Run:
-
-```bash
 uv run pytest tests/unit/classification/test_outcome.py tests/unit/domain/test_planning.py tests/unit/policy tests/unit/classification tests/unit/domain/test_classification.py -v
-```
-
-Expected: all selected tests pass.
-
-- [ ] **Step 11: Run Ruff on S3 production and unit tests**
-
-Run:
-
-```bash
 uv run ruff check src/tidy/domain/planning.py src/tidy/policy tests/unit/domain/test_planning.py tests/unit/policy tests/unit/classification/test_outcome.py
-```
-
-Expected: `All checks passed!`
-
-- [ ] **Step 12: Commit Task 4**
-
-```bash
 git add src/tidy/policy/service.py tests/unit/policy/test_service.py
 git commit -m "feat: orchestrate S3 policy planning"
 ```
+
+Expected: all selected tests pass and Ruff prints `All checks passed!` before commit.
 
 ---
 
@@ -1555,13 +1530,13 @@ git commit -m "feat: orchestrate S3 policy planning"
 **Acceptance ownership:** A43-A50.
 
 **Interfaces:**
-- Consumes: public S3 `PlanningService` and domain contracts from Tasks 1-4.
-- Produces: executable boundary proofs that S3 remains pure, deterministic, provider-free, and execution-free.
-- Does not modify S3 production behavior unless a RED architecture test exposes a real boundary violation.
+- Consumes: the public S3 `PlanningService` and contracts from Tasks 1-4.
+- Produces: executable proofs that S3 remains filesystem-isolated, provider-free, execution-free, and root-path-free.
+- Does not broaden S3 production scope.
 
-- [ ] **Step 1: Write hostile-filesystem architecture fixtures and A43-A44**
+- [ ] **Step 1: Write hostile-filesystem fixtures and A43-A44**
 
-Create `tests/architecture/test_s3_boundaries.py` with a valid model-derived planning request whose `FileEvidence.path` deliberately does not exist:
+Create `tests/architecture/test_s3_boundaries.py`:
 
 ```python
 import ast
@@ -1601,14 +1576,14 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "tidy.storage",
     "tidy.cli",
 )
-FORBIDDEN_MODULES = {
-    "os",
-    "shutil",
-    "subprocess",
-    "random",
-    "secrets",
-    "time",
-    "uuid",
+ALLOWED_IMPORT_ROOTS = {
+    "dataclasses",
+    "enum",
+    "hashlib",
+    "json",
+    "math",
+    "pathlib",
+    "tidy",
 }
 FORBIDDEN_READ_ATTRIBUTES = {
     "open",
@@ -1722,7 +1697,7 @@ def test_s3_a44_hostile_filesystem_read_stat_exists_traversal_apis_are_not_calle
     assert result.status is PlanningStatus.PLANNED
 ```
 
-- [ ] **Step 2: Add static architecture ownership tests A45-A48 and A50**
+- [ ] **Step 2: Add static architecture helpers and A45-A48, A50**
 
 Append:
 
@@ -1734,16 +1709,16 @@ def _import_violations() -> list[str]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if (
-                        alias.name in FORBIDDEN_MODULES
-                        or alias.name.startswith(FORBIDDEN_IMPORT_PREFIXES)
-                    ):
+                    root = alias.name.split(".", 1)[0]
+                    if root not in ALLOWED_IMPORT_ROOTS:
+                        violations.append(f"{path}:{alias.name}")
+                    if alias.name.startswith(FORBIDDEN_IMPORT_PREFIXES):
                         violations.append(f"{path}:{alias.name}")
             elif isinstance(node, ast.ImportFrom) and node.module:
-                if (
-                    node.module in FORBIDDEN_MODULES
-                    or node.module.startswith(FORBIDDEN_IMPORT_PREFIXES)
-                ):
+                root = node.module.split(".", 1)[0]
+                if root not in ALLOWED_IMPORT_ROOTS:
+                    violations.append(f"{path}:{node.module}")
+                if node.module.startswith(FORBIDDEN_IMPORT_PREFIXES):
                     violations.append(f"{path}:{node.module}")
     return violations
 
@@ -1753,11 +1728,13 @@ def _call_violations(names: set[str]) -> list[str]:
     for path in S3_FILES:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name) and node.func.id == "open" and "open" in names:
-                    violations.append(f"{path}:open")
-                elif isinstance(node.func, ast.Attribute) and node.func.attr in names:
-                    violations.append(f"{path}:{node.func.attr}")
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name):
+                if node.func.id in names:
+                    violations.append(f"{path}:{node.func.id}")
+            elif isinstance(node.func, ast.Attribute) and node.func.attr in names:
+                violations.append(f"{path}:{node.func.attr}")
     return violations
 
 
@@ -1766,17 +1743,26 @@ def test_s3_a45_production_source_contains_no_filesystem_mutation_calls() -> Non
 
 
 def test_s3_a46_s3_does_not_import_or_invoke_execution_code() -> None:
-    violations = [value for value in _import_violations() if "tidy.execution" in value]
-    assert violations == []
+    assert not [
+        violation
+        for violation in _import_violations()
+        if "tidy.execution" in violation
+    ]
 
 
-def test_s3_a47_s3_does_not_import_provider_code_or_provider_sdks() -> None:
-    violations = [value for value in _import_violations() if "tidy.classification" in value]
-    assert violations == []
+def test_s3_a47_s3_does_not_import_provider_code_or_external_provider_sdks() -> None:
+    assert not [
+        violation
+        for violation in _import_violations()
+        if "tidy.classification" in violation
+    ]
+    assert _import_violations() == []
 
 
 def test_s3_a48_s3_never_resolves_root_ids_to_live_filesystem_paths() -> None:
-    destination_fields = {field.name for field in fields(type(_service().plan(_request()).plan.destination))}
+    plan = _service().plan(_request()).plan
+    assert plan is not None
+    destination_fields = {field.name for field in fields(type(plan.destination))}
     assert destination_fields == {"root_id", "relative_directory", "filename"}
     assert _call_violations({"resolve"}) == []
 
@@ -1787,7 +1773,7 @@ def test_s3_a50_repository_architecture_gate_has_no_forbidden_dependencies_or_ca
     assert _call_violations(FORBIDDEN_MUTATION_ATTRIBUTES) == []
 ```
 
-Before using `result.plan.destination` in A48, assign `plan = _service().plan(_request()).plan`, assert `plan is not None`, then pass `type(plan.destination)` to `fields`; this avoids an optional-value type error and keeps the test explicit.
+The allow-list import check makes unexpected external SDK imports fail even if their package names were not known when the spec was written.
 
 - [ ] **Step 3: Add end-to-end model-derived isolation test A49**
 
@@ -1801,19 +1787,15 @@ def test_s3_a49_model_derived_planning_needs_no_live_filesystem_access() -> None
     assert result.plan.classification_source is ClassificationSource.MODEL_INFERENCE
 ```
 
-- [ ] **Step 4: Run architecture tests and verify RED or GREEN for the right reason**
-
-Run:
+- [ ] **Step 4: Run architecture tests**
 
 ```bash
 uv run pytest tests/architecture/test_s3_boundaries.py -v
 ```
 
-Expected on a correct Task-4 implementation: A43-A50 pass immediately. If any test is RED, repair only the exposed S3 boundary violation; do not weaken the architecture test.
+Expected on a correct Task-4 implementation: A43-A50 pass. If an architecture test fails, repair the S3 boundary violation; do not weaken the test.
 
 - [ ] **Step 5: Run the exact acceptance ownership audit**
-
-Run:
 
 ```bash
 uv run python -c "import pathlib,re,collections; files=list(pathlib.Path('tests').rglob('test_*.py')); c=collections.Counter(); owners={}; pattern=re.compile(r'def (test_s3_a(\\d{2})_[A-Za-z0-9_]+)'); [(c.update([m.group(2)]),owners.setdefault(m.group(2),[]).append(f'{p}:{m.group(1)}')) for p in files for m in pattern.finditer(p.read_text(encoding='utf-8'))]; expected={f'{i:02d}' for i in range(1,51)}; missing=sorted(expected-set(c)); dupes=sorted(k for k,v in c.items() if v!=1); assert not missing and not dupes,(missing,dupes,{k:owners[k] for k in dupes}); print('A01-A50: exactly one owner each')"
@@ -1825,9 +1807,7 @@ Expected:
 A01-A50: exactly one owner each
 ```
 
-- [ ] **Step 6: Run the complete repository verification gate before touching README**
-
-Run:
+- [ ] **Step 6: Run the complete repository verification gate before status docs**
 
 ```bash
 uv run pytest
@@ -1836,14 +1816,13 @@ uv build
 ```
 
 Expected:
-
 - pytest exits 0 with every repository test green;
 - Ruff prints `All checks passed!`;
-- `uv build` produces both sdist and wheel successfully.
+- `uv build` produces both sdist and wheel.
 
-Do not edit status documentation until all three commands are green.
+Do not update README until all three are green.
 
-- [ ] **Step 7: Update README status only after the green gate**
+- [ ] **Step 7: Update README status after the green gate**
 
 Replace the current `## Status` block in `README.md` with:
 
@@ -1868,8 +1847,6 @@ Next architectural subsystem: TIDY-S4 — Execution & Recovery.
 
 - [ ] **Step 8: Run documentation-safe final verification**
 
-Run:
-
 ```bash
 uv run pytest
 uv run ruff check .
@@ -1878,24 +1855,16 @@ git diff --check
 git status --short
 ```
 
-Expected:
+Expected: all gates green; `git diff --check` exits 0; status shows only the intended uncommitted architecture test/README changes.
 
-- all tests green;
-- Ruff green;
-- build green;
-- `git diff --check` exits 0;
-- `git status --short` shows only the intended README change plus any not-yet-committed architecture test if Step 9 has not committed it yet.
-
-- [ ] **Step 9: Commit architecture gate and verified closure docs**
+- [ ] **Step 9: Commit architecture gate and closure docs**
 
 ```bash
 git add tests/architecture/test_s3_boundaries.py README.md
 git commit -m "test: close TIDY-S3 policy planning"
 ```
 
-- [ ] **Step 10: Run one final clean-tree verification after the closure commit**
-
-Run:
+- [ ] **Step 10: Run one final clean-tree verification**
 
 ```bash
 uv run pytest
@@ -1905,18 +1874,17 @@ git diff --check
 git status --short
 ```
 
-Expected: all gates green and `git status --short` prints nothing.
+Expected: every gate green and `git status --short` prints nothing.
 
 ---
 
 ## Acceptance Ownership Map
 
-Every S3 acceptance ID has exactly one owning test. Auxiliary tests must not contain `test_s3_aNN_` in their names.
-
 | Acceptance IDs | Owning file |
 |---|---|
 | A03-A04 | `tests/unit/classification/test_outcome.py` |
-| A06-A17 | `tests/unit/domain/test_planning.py`, `tests/unit/policy/test_validation.py` |
+| A06-A07 | `tests/unit/domain/test_planning.py` |
+| A08-A17 | `tests/unit/policy/test_validation.py` |
 | A39-A42 | `tests/unit/policy/test_plan_id.py` |
 | A01-A02, A05, A18-A38 | `tests/unit/policy/test_service.py` |
 | A43-A50 | `tests/architecture/test_s3_boundaries.py` |
@@ -1924,12 +1892,10 @@ Every S3 acceptance ID has exactly one owning test. Auxiliary tests must not con
 Count check:
 
 ```text
-2 + 12 + 4 + 24 + 8 = 50
+2 + 2 + 10 + 4 + 24 + 8 = 50
 ```
 
-## Implementation Commit Sequence
-
-The expected reviewable history is:
+## Expected Implementation Commit Sequence
 
 ```text
 1. feat: bind S2 outcomes to evidence
@@ -1939,25 +1905,25 @@ The expected reviewable history is:
 5. test: close TIDY-S3 policy planning
 ```
 
-Do not squash task commits during implementation. Integration strategy is chosen only after the full verification gate is green.
+Do not squash task commits during implementation. Choose integration strategy only after the full verification gate is green.
 
 ## Final Plan Self-Review Checklist
 
-Before declaring implementation complete, verify all of these against the design spec:
+Before declaring implementation complete, verify against the approved design spec that:
 
-- S2 `classify(...) -> ClassificationResult` still exists unchanged; `classify_outcome(...)` is additive.
+- S2 `classify(...) -> ClassificationResult` still exists unchanged and `classify_outcome(...)` is additive.
 - `ClassificationOutcome` binding is created inside S2 from the exact request evidence.
 - S3 request validation rejects malformed contracts before policy work.
 - Complete policy configuration is validated before evidence mismatch, unresolved classification, or label lookup.
-- No configuration priority, first-match, alias, case folding, fallback destination, rename, overwrite, or generic mutation operation has been introduced.
 - `PlanningBlockedReason` contains exactly four V1 values.
+- No priority, first-match, alias, case folding, fallback destination, rename, overwrite, or generic mutation operation exists in S3.
 - Root IDs remain opaque names throughout S3.
-- Destination directory values remain literal tuples of segments.
-- Original filename is copied exactly from S1 evidence.
-- Authorized directory chain is derived internally from ordered prefixes only.
+- Destination directories remain literal tuples of segments.
+- The original filename is copied exactly from S1 evidence.
+- The authorized directory chain is derived internally from ordered prefixes only.
 - V1 preconditions equal exactly `(DESTINATION_MUST_NOT_EXIST,)`.
-- S3 never checks whether source/destination paths exist.
-- `plan_id` includes every authority/provenance field in the design spec and excludes clock/random/runtime path state.
-- S3 production code imports no execution/S4, provider, storage, memory, CLI, process-execution, random, UUID, or time modules.
-- A01-A50 ownership script reports exactly one owner each.
+- S3 never checks whether source or destination paths exist.
+- `plan_id` includes every authority/provenance field named by the spec and excludes clock/random/runtime path state.
+- S3 production code imports no execution/S4 code, classifier/provider implementation, external SDK, storage, memory, CLI, process-execution, random, UUID, or time dependency.
+- A01-A50 ownership audit reports exactly one owner each.
 - Repository-wide pytest, Ruff, build, diff-check, and clean-tree gates pass before integration.
