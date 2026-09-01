@@ -26,6 +26,14 @@ from tidy.domain.planning import (
 from tidy.policy.plan_id import derive_plan_id
 from tidy.policy.validation import validate_planning_configuration
 
+_PROVIDER_UNRESOLVED_REASONS = frozenset(
+    {
+        UnresolvedReason.INSUFFICIENT_EVIDENCE,
+        UnresolvedReason.PROVIDER_UNAVAILABLE,
+        UnresolvedReason.INVALID_PROVIDER_RESPONSE,
+    }
+)
+
 
 def _validate_file_evidence(evidence: FileEvidence) -> None:
     if not isinstance(evidence, FileEvidence):
@@ -89,10 +97,14 @@ def _validate_classification_result(result: ClassificationResult) -> None:
             raise ValueError("classification unresolved reason is invalid")
         if result.provider_confidence is not None:
             raise ValueError("classification unresolved confidence is invalid")
+
         provider_values = (result.provider_name, result.provider_model)
-        if provider_values == (None, None):
+        if result.reason in _PROVIDER_UNRESOLVED_REASONS:
+            if not all(type(value) is str and value != "" for value in provider_values):
+                raise ValueError("classification provider identity is invalid")
             return
-        if not all(type(value) is str and value != "" for value in provider_values):
+
+        if provider_values != (None, None):
             raise ValueError("classification provider identity is invalid")
         return
 
@@ -132,7 +144,7 @@ def _binding_matches(request: PlanningRequest) -> bool:
     binding = request.classification.evidence_binding
     return (
         binding.inbox_id == evidence.inbox_id
-        and binding.relative_path == evidence.relative_path
+        and binding.relative_path.parts == evidence.relative_path.parts
         and binding.sha256 == evidence.sha256
     )
 
